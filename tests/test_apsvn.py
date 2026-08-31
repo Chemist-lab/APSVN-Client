@@ -24,7 +24,7 @@ repo = os.path.join(base, "repo")
 # робоча копія з КИРИЛИЧНОЮ назвою — саме тут падав старий код
 wc = os.path.join(base, "Робота Проєкт")
 
-svnadmin = os.path.join(os.path.dirname(sc.SVN), "svnadmin.exe")
+svnadmin = sc.SVNADMIN
 subprocess.run([svnadmin, "create", repo], check=True, capture_output=True)
 url = "file:///" + repo.replace("\\", "/")
 

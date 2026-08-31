@@ -29,7 +29,7 @@ sc.ensure_config(os.path.join(base, "ad"))
 repo = os.path.join(base, "repo")
 wc = os.path.join(base, "Проєкт Міста")
 wc2 = os.path.join(base, "друга")
-subprocess.run([os.path.join(os.path.dirname(sc.SVN), "svnadmin.exe"),
+subprocess.run([sc.SVNADMIN,
                 "create", repo], check=True, capture_output=True)
 url = "file:///" + repo.replace("\\", "/")
 sc.checkout(url, wc)

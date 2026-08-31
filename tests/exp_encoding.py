@@ -15,7 +15,7 @@ import tempfile
 BIN = os.path.join(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))), "svn")
 SVN = os.path.join(BIN, "svn.exe")
-SVNADMIN = os.path.join(BIN, "svnadmin.exe")
+SVNADMIN = sc.SVNADMIN
 NW = 0x08000000
 ACP = "cp%d" % ctypes.windll.kernel32.GetACP()
 print("ACP =", ACP, "| OEMCP =", ctypes.windll.kernel32.GetOEMCP())

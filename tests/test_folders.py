@@ -43,7 +43,7 @@ app.keyring = FakeKeyring()
 
 repo = os.path.join(base, "repo")
 wc = os.path.join(base, "Проєкт Міста")
-subprocess.run([os.path.join(os.path.dirname(sc.SVN), "svnadmin.exe"),
+subprocess.run([sc.SVNADMIN,
                 "create", repo], check=True, capture_output=True)
 url = "file:///" + repo.replace("\\", "/")
 

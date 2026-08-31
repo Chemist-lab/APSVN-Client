@@ -34,7 +34,7 @@ def check(name, cond, detail=""):
           (" | " + str(detail) if detail else ""))
 
 
-ADMIN = os.path.join(os.path.dirname(sc.SVN), "svnadmin.exe")
+ADMIN = sc.SVNADMIN
 ROOT = tempfile.mkdtemp(prefix="apsvn_conf_")
 
 

@@ -46,7 +46,7 @@ app.keyring = FakeKeyring()
 repo = os.path.join(base, "repo")
 A = os.path.join(base, "Аня")           # кирилиця — щоб не втратити покриття
 B = os.path.join(base, "borys")
-subprocess.run([os.path.join(os.path.dirname(sc.SVN), "svnadmin.exe"),
+subprocess.run([sc.SVNADMIN,
                 "create", repo], check=True, capture_output=True)
 url = "file:///" + repo.replace(os.sep, "/")
 

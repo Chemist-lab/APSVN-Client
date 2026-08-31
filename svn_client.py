@@ -47,6 +47,13 @@ def _find_svn():
 
 SVN = _find_svn()
 
+# svnadmin потрібен лише тестам, але шукати його там означало б зашивати
+# ".exe" у кожен файл — і жоден із них не запустився б на маку. Ім'я береться
+# від самого svn: вони завжди лежать поруч і завжди звуться однаково.
+SVNADMIN = os.path.join(os.path.dirname(SVN),
+                        "svnadmin.exe" if SVN.lower().endswith(".exe")
+                        else "svnadmin")
+
 # файли, які ніколи не потрапляють ані в список, ані в коміт
 JUNK_RE = re.compile(
     r"(\.blend\d+$|\.blend@$|\.mine$|\.r\d+$|\.prej$|\.tmp$|~$|"

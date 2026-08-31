@@ -22,7 +22,7 @@ print()
 
 base = tempfile.mkdtemp(prefix="exp_del_")
 repo = os.path.join(base, "repo")
-subprocess.run([os.path.join(os.path.dirname(sc.SVN), "svnadmin.exe"), "create", repo],
+subprocess.run([sc.SVNADMIN, "create", repo],
                check=True, capture_output=True)
 url = "file:///" + repo.replace("\\", "/")
 

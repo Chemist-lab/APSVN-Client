@@ -51,7 +51,7 @@ class FakeKeyring:
 kr = FakeKeyring()
 app.keyring = kr
 
-svnadmin = os.path.join(os.path.dirname(sc.SVN), "svnadmin.exe")
+svnadmin = sc.SVNADMIN
 
 
 def make_repo(tag):

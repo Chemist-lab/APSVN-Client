@@ -52,7 +52,7 @@ app.keyring = FakeKeyring()
 
 repo = os.path.join(base, "repo")
 wc = os.path.join(base, "Проєкт Міста")
-subprocess.run([os.path.join(os.path.dirname(sc.SVN), "svnadmin.exe"),
+subprocess.run([sc.SVNADMIN,
                 "create", repo], check=True, capture_output=True)
 url = "file:///" + repo.replace("\\", "/")
 api = app.Api()
@@ -197,7 +197,7 @@ print("8. Вкладений проєкт видно й не пропонуют�
 print("=" * 64)
 nested = os.path.join(wc, "чужий-проєкт")
 repo2 = os.path.join(base, "repo2")
-subprocess.run([os.path.join(os.path.dirname(sc.SVN), "svnadmin.exe"),
+subprocess.run([sc.SVNADMIN,
                 "create", repo2], check=True, capture_output=True)
 sc.checkout("file:///" + repo2.replace("\\", "/"), nested)
 d = api.browse("")

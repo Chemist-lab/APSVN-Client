@@ -30,7 +30,7 @@ base = tempfile.mkdtemp(prefix="apsvn_hist_")
 sc.ensure_config(os.path.join(base, "appdata"))
 repo = os.path.join(base, "repo")
 wc = os.path.join(base, "Проєкт Міста")          # кирилиця у шляху копії
-subprocess.run([os.path.join(os.path.dirname(sc.SVN), "svnadmin.exe"),
+subprocess.run([sc.SVNADMIN,
                 "create", repo], check=True, capture_output=True)
 url = "file:///" + repo.replace("\\", "/")
 sc.checkout(url, wc)

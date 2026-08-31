@@ -28,7 +28,10 @@ echo "$APP_NAME $VER"
 # --- перевірки, які дешевше зробити зараз, ніж у художника ------------------
 PY="${PYTHON:-python3}"
 command -v "$PY" >/dev/null || { echo "немає python3" >&2; exit 1; }
-"$PY" -c 'import webview, objc, keyring' 2>/dev/null || {
+# PYTHONPATH саме такий, як у запускачі нижче: залежності лежать у vendor, а
+# не в системному python, і без цього перевірка лаялась на цілком справну
+# збірку — а тоді її просто перестають читати.
+PYTHONPATH="$SRC/vendor" "$PY" -c 'import webview, objc, keyring' 2>/dev/null || {
   echo "бракує залежностей. Постав їх у теку vendor:" >&2
   echo "  $PY -m pip install --target vendor pywebview pyobjc-core \\" >&2
   echo "      pyobjc-framework-Cocoa pyobjc-framework-WebKit keyring" >&2
@@ -66,11 +69,56 @@ fi
 # --- запускач ----------------------------------------------------------------
 # Окремий скрипт, а не прямий виклик python: у .app виконуваний файл мусить
 # бути один і лежати саме в MacOS/, а Python треба ще й показати, де vendor.
+#
+# ТУТ БУЛА МІНА, і вона коштувала б кожного першого запуску. Раніше стояло
+# просто exec "${PYTHON:-python3}". З термінала це працює — там у PATH перший
+# той python, яким ставили vendor. Але Finder дає програмі МІНІМАЛЬНИЙ PATH
+# (/usr/bin:/bin:/usr/sbin:/sbin), де python3 — це Apple-івський /usr/bin/python3
+# версії 3.9. А vendor зібрано під 3.14: скомпільований _objc.so просто не
+# вантажиться в 3.9, і програма вмирала на імпорті ще до першого вікна. Тобто
+# збірка, яку розробник щойно перевірив у себе, у художника не піднімалася б
+# зовсім — а перевірка «python3 app.py» цього не показує НІКОЛИ.
+#
+# Тому питаємо не версію, а саму придатність: чи вміє цей python підняти те,
+# що лежить у vendor. Версію можна вгадати неправильно, імпорт — ні.
 cat > "$APP/Contents/MacOS/$APP_NAME" <<'LAUNCH'
 #!/bin/bash
 DIR="$(cd "$(dirname "$0")/../Resources" && pwd)"
 export PYTHONPATH="$DIR:$DIR/vendor:${PYTHONPATH:-}"
-exec "${PYTHON:-python3}" "$DIR/app.py" "$@"
+# Без цього перший же запуск клав 174 файли .pyc у 41 теку __pycache__ ВСЕРЕДИНІ
+# підписаного bundle і ламав пломбу підпису: codesign після цього каже "a sealed
+# resource is missing or invalid". Байт-код кладеться на збірці (нижче), тобто
+# під підпис, а в художника вже нічого не дописується.
+export PYTHONDONTWRITEBYTECODE=1
+
+usable() {
+  [ -n "$1" ] && [ -x "$1" ] &&     "$1" -c 'import webview, objc, keyring' >/dev/null 2>&1
+}
+
+CANDS=()
+[ -n "${PYTHON:-}" ] && CANDS+=("$PYTHON")
+CANDS+=(/opt/homebrew/bin/python3 /usr/local/bin/python3)
+# Збірки з python.org — новіші першими, інакше 3.9 обійде 3.14 за абеткою.
+while IFS= read -r p; do
+  [ -n "$p" ] && CANDS+=("$p")
+done < <(ls -d /Library/Frameworks/Python.framework/Versions/*/bin/python3          2>/dev/null | sort -Vr)
+CANDS+=("$(command -v python3 2>/dev/null)" /usr/bin/python3)
+
+for py in "${CANDS[@]}"; do
+  if usable "$py"; then
+    exec "$py" "$DIR/app.py" "$@"
+  fi
+done
+
+# Жоден не підійшов. Мовчки померти — найгірше з можливого: художник двічі
+# клацнув і не сталося нічого. Тож кажемо, що саме не так.
+osascript -e 'display dialog "APSVN did not find a Python that can run it.
+
+The application needs Python 3.14 (the version its bundled libraries were built
+for). Install it from python.org or with: brew install python
+
+APSVN will start by itself once it is there." with title "APSVN" buttons {"OK"} default button 1 with icon stop' >/dev/null 2>&1
+exit 1
 LAUNCH
 chmod +x "$APP/Contents/MacOS/$APP_NAME"
 
@@ -97,6 +145,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+
+# --- байт-код ----------------------------------------------------------------
+# Компілюємо ДО підпису: інакше або запуск пише .pyc у bundle і ламає пломбу,
+# або (з PYTHONDONTWRITEBYTECODE) кожен старт компілює наново. Якщо в художника
+# інша мінорна версія Python, ці .pyc просто ігноруються — це не помилка.
+PYTHONPATH="$SRC/vendor" "$PY" -m compileall -q "$APP/Contents/Resources" \
+  >/dev/null 2>&1 || true
 
 # --- ad-hoc підпис -----------------------------------------------------------
 # "-" означає ad-hoc: підпис без сертифіката, безкоштовний, акаунта не треба.

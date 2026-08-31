@@ -52,10 +52,21 @@ for f in "$SRC"/*.py; do
     # *_win.py на маку не імпортується ніколи, а тягнути в збірку код для
     # чужої системи означає лише збивати з пантелику того, хто полізе всередину.
     *_win.py) continue ;;
+    # Збиральне приладдя: малює іконку й робить APSVN.exe. Художникові воно ні
+    # до чого, а make_launcher.py ще й суто віконне.
+    make_*.py) continue ;;
+    # Те саме, тільки імені з _win не має: читає таблицю ресурсів PE, тобто
+    # має сенс лише на Windows і лише під час збірки.
+    peres.py) continue ;;
   esac
   cp "$f" "$APP/Contents/Resources/"
 done
 cp -R "$SRC/ui" "$APP/Contents/Resources/"
+# Іконка bundle. Без неї Finder і Dock показують порожній аркуш — програма
+# виглядає як щось недороблене ще до першого запуску. CFBundleIconFile нижче
+# називає її БЕЗ розширення, так вимагає macOS.
+[ -f "$SRC/apsvn.icns" ] && cp "$SRC/apsvn.icns" "$APP/Contents/Resources/" \
+  || echo "  УВАГА: apsvn.icns немає — .app лишиться без іконки" >&2
 [ -d "$SRC/vendor" ] && cp -R "$SRC/vendor" "$APP/Contents/Resources/"
 
 # --- svn ---------------------------------------------------------------------
@@ -188,12 +199,40 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleExecutable</key><string>$APP_NAME</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>CFBundleIconFile</key><string>apsvn</string>
   <key>NSHighResolutionCapable</key><true/>
   <!-- Без цього вікно WKWebView не отримує фокус клавіатури -->
   <key>NSPrincipalClass</key><string>NSApplication</string>
 </dict>
 </plist>
 PLIST
+
+# --- чи зібране взагалі підіймається ------------------------------------------
+# Список виключень вище — річ, яка старіє: варто комусь додати модуль з іменем
+# під шаблон, і він мовчки не поїде. Тому не покладаємось на список, а
+# перевіряємо: імпортуємо зібраний app тим самим Python, яким він
+# запускатиметься. Саме так виглядала б поломка з updater.py — «could not
+# start» у художника; хай краще падає тут.
+if [ -n "$RUNTIME" ]; then
+  CHECK_PY="$APP/Contents/MacOS/python3"
+  CHECK_HOME="$APP/Contents/Frameworks/Python.framework/Versions/$RUNTIME"
+else
+  CHECK_PY="$PY"
+  CHECK_HOME=""
+fi
+# -P обовʼязковий, і без нього перевірка була б декоративною: python -c кладе
+# ПОТОЧНУ теку попереду PYTHONPATH, а збірка запускається з теки проєкту, де
+# лежать усі модулі. Тобто import брав би їх звідти й проходив навіть тоді,
+# коли в bundle не поїхало нічого. Перевірено: без -P контроль мовчав про
+# bundle, з якого прибрано updater.py.
+CHECK_ENV=(env "PYTHONHOME=$CHECK_HOME"
+           "PYTHONPATH=$APP/Contents/Resources:$APP/Contents/Resources/vendor")
+if ! "${CHECK_ENV[@]}" "$CHECK_PY" -P -c 'import app' >/dev/null 2>&1; then
+  echo "СТОП: зібраний app не імпортується — у bundle чогось бракує." >&2
+  "${CHECK_ENV[@]}" "$CHECK_PY" -P -c 'import app' 2>&1 | tail -5 >&2
+  exit 1
+fi
+echo "  перевірено: зібраний app імпортується"
 
 # --- байт-код ----------------------------------------------------------------
 # Компілюємо ДО підпису: інакше або запуск пише .pyc у bundle і ламає пломбу,

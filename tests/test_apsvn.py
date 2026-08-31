@@ -8,6 +8,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))
+import desktop
 import svn_client as sc
 
 OK, FAIL = [], []
@@ -26,7 +27,10 @@ wc = os.path.join(base, "Робота Проєкт")
 
 svnadmin = sc.SVNADMIN
 subprocess.run([svnadmin, "create", repo], check=True, capture_output=True)
-url = "file:///" + repo.replace("\\", "/")
+# .lstrip: на POSIX шлях уже починається з "/", і без цього вийшло б
+# file:////… — svn таке ковтає при checkout, але svn info віддає канонічні три
+# слеші, і порівняння URL у probe() каже «тут інший проєкт».
+url = "file:///" + repo.replace("\\", "/").lstrip("/")
 
 print("svn:", sc.SVN)
 print("ANSI codepage:", sc._acp())
@@ -162,8 +166,14 @@ check("scan_unprotected не падає", isinstance(need, list), need)
 #     разом зі своїм 8.3-псевдонімом, і видалення стає неможливо здати взагалі.
 APO = "звʼязок міста.blend"
 open(os.path.join(wc, APO), "wb").write(b"B" * 200)
+# На Windows уся морока з 8.3 і --targets існує саме тому, що цей символ не
+# лягає в ANSI. На POSIX argv у UTF-8, драбина кодувань вироджується в перший
+# же крок — тож там треба перевіряти протилежне: cp1251 його не бере (це
+# властивість символу, однакова скрізь), а робоче кодування бере.
 check("апостроф ʼ справді не кодується в ANSI",
-      not sc._fits(APO, sc._acp()) and not sc._fits(APO, "cp1251"))
+      not sc._fits(APO, "cp1251") and
+      (not sc._fits(APO, sc._acp()) if desktop.WINDOWS
+       else sc._fits(APO, sc._acp())))
 try:
     sc.add(wc, [APO])
     r = sc.commit(wc, [APO], "файл з апострофом")

@@ -14,6 +14,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))
+import desktop
 import svn_client as sc
 
 OK, FAIL = [], []
@@ -31,7 +32,10 @@ wc = os.path.join(base, "Проєкт Міста")
 wc2 = os.path.join(base, "друга")
 subprocess.run([sc.SVNADMIN,
                 "create", repo], check=True, capture_output=True)
-url = "file:///" + repo.replace("\\", "/")
+# .lstrip: на POSIX шлях уже починається з "/", і без цього вийшло б
+# file:////… — svn таке ковтає при checkout, але svn info віддає канонічні три
+# слеші, і порівняння URL у probe() каже «тут інший проєкт».
+url = "file:///" + repo.replace("\\", "/").lstrip("/")
 sc.checkout(url, wc)
 
 N = 60
@@ -167,11 +171,22 @@ sc.commit(wc, [HEAVY2], "ще один великий",
 took = _t.time() - t1
 real = [r for r in rates if r]
 check("операція тривала довше за вікно згладжування", took > 1.5, "%.2f с" % took)
-check("швидкість виміряна, а не вигадана", bool(real), rates[:6])
-if real:
+# Лічильники вводу-виводу процесу svn є лише на Windows (GetProcessIoCounters).
+# На маку прямого відповідника НЕМАЄ, і це перевірено, а не припущено:
+# proc_pid_rusage віддає ri_diskio_bytesread == 0 для V4, V5 і V6 навіть тоді,
+# коли процес читає файл повз кеш сторінок (F_NOCACHE) — ядро просто не дає
+# цих чисел непривілейованому спостерігачеві. Тому на маку швидкості немає, і
+# це правильно: APSVN не показує того, чого не заміряв. Залишок часу там
+# рахується з rate_hint — швидкості, заміряної на попередніх передачах.
+if desktop.WINDOWS:
+    check("швидкість виміряна, а не вигадана", bool(real), rates[:6])
     check("швидкість додатна й правдоподібна",
           all(0 < r < 5e9 for r in real),
           ["%.0f МБ/с" % (r / 1048576) for r in real[:4]])
+else:
+    check("на маку швидкість чесно не вигадується", not real, rates[:6])
+    check("і замість неї не лізе нуль чи сміття",
+          all(r is None for r in rates), rates[:6])
 check("на коротких операціях швидкість чесно відсутня", rates[0] is None, rates[0])
 
 print()

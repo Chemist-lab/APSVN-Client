@@ -54,6 +54,21 @@ SVNADMIN = os.path.join(os.path.dirname(SVN),
                         "svnadmin.exe" if SVN.lower().endswith(".exe")
                         else "svnadmin")
 
+# Корені сертифікатів для СВОГО svn. OpenSSL, з яким зібраний svn із Homebrew,
+# зашитий на /opt/homebrew/etc/openssl@3/cert.pem — теку, якої на машині
+# художника немає. Перевірено дослідом, а не припущено: без цього КОЖНА дія до
+# https падає з E230001 «issuer is not trusted», хоч serf на місці й https у
+# списку схем. Тому make_svn_mac.sh кладе cert.pem поруч зі своїм svn, а тут ми
+# лише показуємо, де він.
+#
+# setdefault, а не присвоєння: якщо адміністратор студії виставив свій
+# SSL_CERT_FILE (корпоративний ЦС на проксі — річ цілком реальна), його вибір
+# головніший за наш. Через середовище, а не в кожен виклик: підпроцеси
+# успадкують самі, і це не розповзається по файлу.
+_CERT = os.path.join(os.path.dirname(os.path.dirname(SVN)), "cert.pem")
+if not desktop.WINDOWS and os.path.isfile(_CERT):
+    os.environ.setdefault("SSL_CERT_FILE", _CERT)
+
 # файли, які ніколи не потрапляють ані в список, ані в коміт
 JUNK_RE = re.compile(
     r"(\.blend\d+$|\.blend@$|\.mine$|\.r\d+$|\.prej$|\.tmp$|~$|"
@@ -286,11 +301,26 @@ def supports_stdin_password():
     мовчки, але пароль не читає — і кожна мережева дія падає з «Authentication
     failed». Тести на file://-репозиторії цього не бачать, бо там автентифікації
     немає взагалі. Тому питаємо сам svn один раз локально, без мережі.
+
+    "-v" додається ЛИШЕ ПОЗА WINDOWS, і це не косметика. svn 1.14.5 з Homebrew
+    ховає глобальні опції з "svn help <підкоманда>": там немає навіть рядка про
+    --password, лише підказка «Use -v to show global and experimental options».
+    Тобто проба казала «не вміє» про збірку, яка вміє — перевірено дослідом на
+    справжньому svnserve з паролем: правильний пароль зі stdin пускає,
+    неправильний відхиляється (tests/exp_stdin_password.py). Наслідок був тихий
+    і неприємний: на маку APSVN ішов запасним шляхом і клав пароль у argv, де
+    його видно в списку процесів.
+
+    Віконну гілку проби не чіпаємо навмисно. Саме її результат (False) уводить
+    SlikSvn на запасний шлях, а SlikSvn прапорець приймає й ігнорує — тож
+    помилитися тут означає покласти кожну мережеву дію в художника. Перевірити
+    наслідки такої зміни з мака неможливо, отже й змінювати нічого.
     """
     global _stdin_pw
     if _stdin_pw is None:
+        cmd = [SVN, "help", "status"] + ([] if desktop.WINDOWS else ["-v"])
         try:
-            r = subprocess.run([SVN, "help", "status"], capture_output=True,
+            r = subprocess.run(cmd, capture_output=True,
                                **desktop.no_window(),
                                stdin=subprocess.DEVNULL, timeout=30)
             _stdin_pw = "--password-from-stdin" in _dec(r.stdout)
@@ -528,9 +558,19 @@ def _run(args, cwd=None, username=None, password=None, timeout=120,
     вводу-виводу процесу.
     """
     if not os.path.isfile(SVN):
-        raise SvnError("svn.exe is missing. It looks like APSVN was copied "
-                       "only partly — you need the whole folder, including "
-                       "the svn subfolder.")
+        # Текст різний, бо причини різні. На Windows svn їде в комплекті, тож
+        # його відсутність означає рівно одне: теку скопіювали не всю. На маку
+        # збірка поки що позичає системний svn, а macOS свого не має з часів
+        # Xcode 11 — тобто найімовірніше його просто ніде взяти. Порада «візьми
+        # теку цілком» там не веде нікуди, а «svn.exe» на маку не існує взагалі.
+        raise SvnError(
+            "svn.exe is missing. It looks like APSVN was copied "
+            "only partly — you need the whole folder, including "
+            "the svn subfolder."
+            if desktop.WINDOWS else
+            "Subversion is missing. APSVN needs the “svn” command line tool, "
+            "and macOS does not ship one. Install it with:\n\n"
+            "    brew install subversion")
     cmd = [SVN] + list(args)
     if _config_dir:
         cmd += ["--config-dir", _config_dir]

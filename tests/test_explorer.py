@@ -19,6 +19,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "vendor"))
 
+import desktop
 import explorer as ex
 import svn_client as sc
 import app
@@ -54,7 +55,10 @@ repo = os.path.join(base, "repo")
 wc = os.path.join(base, "Проєкт Міста")
 subprocess.run([sc.SVNADMIN,
                 "create", repo], check=True, capture_output=True)
-url = "file:///" + repo.replace("\\", "/")
+# .lstrip: на POSIX шлях уже починається з "/", і без цього вийшло б
+# file:////… — svn таке ковтає при checkout, але svn info віддає канонічні три
+# слеші, і порівняння URL у probe() каже «тут інший проєкт».
+url = "file:///" + repo.replace("\\", "/").lstrip("/")
 api = app.Api()
 api.add_project(url, wc, ME, "pw", name="Місто")
 
@@ -128,12 +132,32 @@ print()
 print("=" * 64)
 print("4. Вихід за межі проєкту неможливий")
 print("=" * 64)
-for bad in ("..", "../..", "..\\..\\Windows", "Кадри/../..", "C:\\Windows"):
+for bad in ("..", "../..", "Кадри/../.."):
     try:
         ex.inside(wc, bad)
         check("відхилено: %r" % bad, False, "пройшло")
     except sc.SvnError:
         check("відхилено: %r" % bad, True)
+
+# А ось ці два — вихід за межі ЛИШЕ на Windows, бо там "\" роздільник. На
+# POSIX зворотний слеш — звичайний символ в імені, тож "..\..\Windows" — це
+# файл УСЕРЕДИНІ робочої копії, і відхиляти його було б помилкою: такий файл
+# там може реально лежати. Тому перевірка різна, а не пропущена — інакше на
+# маку ми б мовчки втратили дві перевірки й не знали б, що саме тут інакше.
+for bad in ("..\\..\\Windows", "C:\\Windows"):
+    if desktop.WINDOWS:
+        try:
+            ex.inside(wc, bad)
+            check("відхилено: %r" % bad, False, "пройшло")
+        except sc.SvnError:
+            check("відхилено: %r" % bad, True)
+    else:
+        try:
+            got = ex.inside(wc, bad)
+            check("на POSIX %r — імʼя всередині, не вихід" % bad,
+                  got.startswith(os.path.abspath(wc) + os.sep), got)
+        except sc.SvnError as e:
+            check("на POSIX %r — імʼя всередині, не вихід" % bad, False, e)
 check("сам корінь дозволено", ex.inside(wc, "") == os.path.abspath(wc))
 
 print()
@@ -199,7 +223,7 @@ nested = os.path.join(wc, "чужий-проєкт")
 repo2 = os.path.join(base, "repo2")
 subprocess.run([sc.SVNADMIN,
                 "create", repo2], check=True, capture_output=True)
-sc.checkout("file:///" + repo2.replace("\\", "/"), nested)
+sc.checkout("file:///" + repo2.replace("\\", "/").lstrip("/"), nested)
 d = api.browse("")
 n = next((e for e in d["entries"] if e["name"] == "чужий-проєкт"), None)
 check("вкладений проєкт у списку є", n is not None)

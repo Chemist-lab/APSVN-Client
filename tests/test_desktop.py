@@ -12,12 +12,14 @@ no_window(): попередній варіант
 й дивимось, що шар вирішує. Це не заміна запуску на справжньому маку, але
 ловить те, що можна зловити звідси.
 """
+import codecs
 import os
 import subprocess
 import sys
 
-sys.path.insert(0, os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "vendor"))
 import desktop
 
 OK, FAIL = [], []
@@ -70,9 +72,19 @@ print()
 print("=" * 64)
 print("2. Де лежать налаштування")
 print("=" * 64)
+# APPDATA є лише на Windows, а перевіряємо ми ГІЛКУ, а не машину: без
+# підстановки conf_dir бере запасне "." і перевірка провалюється всюди, крім
+# Windows — тобто каже про систему, а не про код.
+FAKE_APPDATA = r"C:\Users\test\AppData\Roaming"
+_had = os.environ.get("APPDATA")
+os.environ["APPDATA"] = FAKE_APPDATA
 with AsPlatform(True, False):
     d = desktop.conf_dir("APSVN")
-check("Windows -> APPDATA", "APSVN" in d and os.path.isabs(d), d)
+if _had is None:
+    os.environ.pop("APPDATA", None)
+else:
+    os.environ["APPDATA"] = _had
+check("Windows -> APPDATA", d == os.path.join(FAKE_APPDATA, "APSVN"), d)
 
 with AsPlatform(False, True):
     d = desktop.conf_dir("APSVN")
@@ -125,8 +137,13 @@ with AsPlatform(False, True):
     check("8.3-псевдонімів поза Windows не буває",
           sc._short(os.getcwd()) is None)
 with AsPlatform(True, False):
-    check("на Windows кодова сторінка справжня",
-          sc._acp().startswith("cp"), sc._acp())
+    cp = sc._acp()
+# Підміна прапорця не підміняє саму систему: ctypes.windll на маку не існує,
+# тож гілка звалюється в запасний locale.getpreferredencoding() і чесно віддає
+# UTF-8. Справжню кодову сторінку видно ЛИШЕ на Windows; звідси перевіряємо
+# слабше — що назва придатна до вживання, а не що вона "cp****".
+check("на Windows кодова сторінка справжня",
+      cp.startswith("cp") if desktop.WINDOWS else bool(codecs.lookup(cp)), cp)
 
 print()
 print("=" * 64)
@@ -161,12 +178,31 @@ with AsPlatform(False, True):
     if si:
         check("і бере саме macOS-гілку",
               si._sys.__name__ == "shellicon_mac", si._sys.__name__)
-        check("іконка без PyObjC віддає None, а не падає",
-              si.icon(".blend") is None)
-        check("icons() віддає порожній словник",
-              si.icons([".blend", ".uasset"]) == {})
-        check("unreal_editor() не кидає винятку",
-              si.unreal_editor() is None)
+        # Тут стояло «має бути None». Це писалося з Windows, де PyObjC
+        # немає, тож порожнеча була єдиним можливим результатом — і на
+        # справжньому маку перевірка проходила б, лише поки іконки зламані.
+        # Тож перевіряємо не конкретне значення, а те, заради чого гілка
+        # існує: вона не кидає винятку і віддає чесний PNG там, де є з чого,
+        # і чесне None там, де нема.
+        objc = si._sys._appkit()
+        try:
+            got, thrown = si.icon(".blend"), None
+        except Exception as e:
+            got, thrown = None, e
+        check("іконка: з PyObjC — PNG, без нього None (але не виняток)",
+              thrown is None and (
+                  (got or "").startswith("data:image/png;base64,")
+                  if objc else got is None),
+              thrown or (got or "None")[:32])
+        many = si.icons([".blend", ".uasset"])
+        check("icons() віддає словник під стать",
+              isinstance(many, dict) and (bool(many) if objc else many == {}),
+              sorted(many))
+        try:
+            si.unreal_editor()
+            check("unreal_editor() не кидає винятку", True)
+        except Exception as e:
+            check("unreal_editor() не кидає винятку", False, e)
 sys.modules.pop("shellicon", None)
 if _had is not None:
     sys.modules["shellicon"] = _had

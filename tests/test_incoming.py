@@ -48,7 +48,10 @@ A = os.path.join(base, "Аня")           # кирилиця — щоб не в
 B = os.path.join(base, "borys")
 subprocess.run([sc.SVNADMIN,
                 "create", repo], check=True, capture_output=True)
-url = "file:///" + repo.replace(os.sep, "/")
+# .lstrip: на POSIX шлях уже починається з "/", і без цього вийшло б
+# file:////… — svn таке ковтає при checkout, але svn info віддає канонічні три
+# слеші, і порівняння URL у probe() каже «тут інший проєкт».
+url = "file:///" + repo.replace(os.sep, "/").lstrip("/")
 
 api = app.Api()
 api.setup(url, A, "anya", "s3cret")

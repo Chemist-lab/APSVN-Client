@@ -7,7 +7,8 @@ import subprocess
 import sys
 import tempfile
 
-sys.path.insert(0, r"I:\Claude_Coworks\apsvn")
+sys.path.insert(0, os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))))
 import svn_client as sc
 
 NAME = "звʼязок міста.txt"          # U+02BC — немає в cp1251/1252/жодній ANSI
@@ -24,7 +25,10 @@ base = tempfile.mkdtemp(prefix="exp_del_")
 repo = os.path.join(base, "repo")
 subprocess.run([sc.SVNADMIN, "create", repo],
                check=True, capture_output=True)
-url = "file:///" + repo.replace("\\", "/")
+# .lstrip: на POSIX шлях уже починається з "/", і без цього вийшло б
+# file:////… — svn таке ковтає при checkout, але svn info віддає канонічні три
+# слеші, і порівняння URL у probe() каже «тут інший проєкт».
+url = "file:///" + repo.replace("\\", "/").lstrip("/")
 
 
 def run(args, cwd, tf=None):

@@ -45,7 +45,10 @@ def short(p):
 base = tempfile.mkdtemp(prefix="apsvn_exp_")
 repo = os.path.join(base, "repo")
 subprocess.run([SVNADMIN, "create", repo], check=True, capture_output=True)
-url = "file:///" + repo.replace("\\", "/")
+# .lstrip: на POSIX шлях уже починається з "/", і без цього вийшло б
+# file:////… — svn таке ковтає при checkout, але svn info віддає канонічні три
+# слеші, і порівняння URL у probe() каже «тут інший проєкт».
+url = "file:///" + repo.replace("\\", "/").lstrip("/")
 
 # ---------------------------------------------------------------- A: шлях WC
 print("=" * 66)

@@ -253,6 +253,8 @@ generic.)
 | `svn_client.py` | wrapper around `svn.exe` |
 | `ui/`           | the interface (HTML/CSS/JS) |
 | `runtime/`      | Python 3.14 embeddable — so nothing has to be installed |
+| `runtime-mac/`  | the same idea on macOS: a portable python.org framework, built by `make_runtime_mac.sh` |
+| `svn-mac/`      | a portable Subversion for macOS, built by `make_svn_mac.sh` |
 | `vendor/`       | pywebview, keyring and their dependencies |
 | `svn/`          | SlikSvn (Subversion CLI, Apache-2.0) |
 | `explorer.py`   | the Explorer: one folder at a time |
@@ -334,7 +336,16 @@ behind decisions that look odd until you know why.
   fails with “Authentication failed”. So `supports_stdin_password()` asks svn
   itself, and the `--password` fallback is offset by svn's own credential cache
   (encrypted with DPAPI on Windows) so the password sits in argv once rather
-  than on every call.
+  than on every call. **The same probe was blind on macOS, the other way
+  round:** svn 1.14.5 from Homebrew hides global options from
+  `svn help <subcommand>` — there is not even a line about `--password`, only a
+  hint to pass `-v` — so the probe answered “cannot” about a build that can, and
+  the password went into argv for nothing. `-v` is therefore added off Windows
+  only; the Windows probe is left exactly as it was, because there a wrong
+  answer means every network action fails for the artist. That Homebrew's svn
+  really does read stdin was established on a live `svnserve` that demands a
+  password, not from the help text that had just lied:
+  `tests/exp_stdin_password.py`.
 * **“You are behind” is a count of files, never a difference of revision
   numbers.** It used to be `HEAD - <working copy revision>`, and it told an
   artist to *get the latest* the moment they finished submitting themselves.
@@ -553,19 +564,89 @@ fooled by it — but on Apple Silicon an unsigned binary does not warn, it
 simply refuses to start, so the build would be dead without it.
 
 ```bash
+./make_runtime_mac.sh   # once — builds the portable Python into runtime-mac/
+./make_svn_mac.sh       # once — builds the portable svn into svn-mac/
 ./package_mac.sh
 ```
 
-**Everything under macOS is written but unrun.** It was developed on Windows,
-so treat `shellicon_mac.py` and `package_mac.sh` as drafts to be checked on a
-real Mac first. What *was* verified from Windows is that the macOS branches are
-chosen correctly and degrade to “no icon” rather than an exception — see
-`tests/test_desktop.py`, which fakes the platform flags and exercises them.
+It has been run — built on macOS 27 (Apple Silicon) against Python 3.14 and svn
+1.14.5 from Homebrew. The window comes up, the WKWebView bridge works, and icons
+come from the system.
 
-Not yet solved: svn from Homebrew is not relocatable as it stands (it links
-against `/opt/homebrew/lib/*.dylib`), so the bundle currently falls back to the
-system `svn` and says so during the build. Making it portable means
-`install_name_tool` and rpath work — a job of its own.
+The part that actually matters was checked somewhere else, because a build
+machine cannot prove it: the zip was opened on **a second Mac with neither
+`python3` nor `svn` installed** — not even Apple's 3.9 stub, so the Command Line
+Tools were absent too — and the app started. There was nothing there to fall back
+on: had the framework not relocated, the launcher would have found no candidate
+and said so in a dialog instead. So the `.app` carries its own Python, and the
+artist installs nothing, exactly as on Windows.
+
+Nothing was wrong with the *logic*; everything that broke broke at the seam
+between the code and the system, and the git history has each one.
+
+#### The Python inside the bundle
+
+`runtime-mac/` is the macOS twin of `runtime/` on Windows, and like it, it is
+built rather than committed. `make_runtime_mac.sh` copies the **python.org**
+framework — deliberately not Homebrew's, which reaches into `/opt/homebrew` for
+its OpenSSL and would drag half of Homebrew along — trims it (CPython's own test
+suite alone is 116 MB, and the interface is a WKWebView, so Tk goes too),
+rewrites every absolute `install_name` to `@loader_path`/`@executable_path`, and
+signs what it changed. 118 MB unpacked, 39 MB zipped, against 43 MB and 20 MB on
+Windows.
+
+Three things about it are load-bearing, and all three were paid for:
+
+* **the interpreter lives in `Contents/MacOS`, and that is what gives the app
+  its own name.** Borrowing the system Python meant `exec` into a binary inside
+  *its* `Python.app`, so LaunchServices credited that bundle: the Dock said
+  “Python”, with Python's icon. Nothing else was needed to fix it — the same
+  binary, moved inside our own `Contents/MacOS`, registers as
+  `cloud.altpicture.apsvn`;
+* **`PYTHONHOME` is set explicitly.** The stub comes from `Python.app` inside
+  the framework and now sits somewhere else entirely, so the landmarks CPython
+  uses to find its own standard library are no longer where it looks. Guessing
+  here is pointless when the answer can simply be stated;
+* **the standard library's bytecode is hash-based `unchecked`** (PEP 552). Plain
+  `.pyc` are validated by timestamp, and `cp -R` rewrites the `.py` timestamps —
+  so the moment the framework is copied, the whole library counts as stale.
+  Then one of two bad things: Python rewrites the `.pyc` *inside a signed
+  bundle* and breaks the seal on the artist's machine, or, with
+  `PYTHONDONTWRITEBYTECODE`, recompiles it on every launch. `unchecked-hash` is
+  checked against neither, so copying cannot disturb it. Verified: the signature
+  survives a run made deliberately without `PYTHONDONTWRITEBYTECODE`.
+
+If `runtime-mac/` is absent the build still works — the launcher falls back to
+hunting for a system Python and asks each candidate `import webview, objc,
+keyring`, because a version number guesses at what an import answers. That
+fallback is what the artist must never reach.
+
+Tests: 445 of the 450 run here. The other five are not skipped for convenience
+and nothing is missing — two exercise the Windows icon backend, and three need
+Unreal Engine actually installed to have anything to look at.
+
+#### The svn inside the bundle
+
+`make_svn_mac.sh` does for `svn` what `make_runtime_mac.sh` does for Python, and
+it matters more here: macOS has not shipped `svn` since Xcode 11, so on a clean
+machine there is nothing to borrow at all. It copies `svn` and `svnadmin`, walks
+the dependency closure (22 libraries, 10 MB), rewrites every absolute path to
+`@executable_path`/`@loader_path` and re-signs. 11 MB in total.
+
+One thing there is not obvious and would have shipped broken. **OpenSSL looks for
+its root certificates at a compiled-in absolute path** — for the Homebrew build,
+`/opt/homebrew/etc/openssl@3/cert.pem`, which does not exist on the artist's
+machine. Everything else looks perfect: `svn --version` lists `https`, serf is
+present, the binary has no absolute references left — and then every single
+network action fails with `E230001: issuer is not trusted`. So `cert.pem` is
+copied next to the bundled `svn`, and `svn_client` points `SSL_CERT_FILE` at it —
+with `setdefault`, because a studio that has set its own (a corporate CA on a
+proxy is a real thing) must win over ours. Verified both ways: without the file
+the handshake fails, with it the connection reaches the server and stops at
+authentication, which is the correct answer for a request carrying no password.
+
+Nothing is left unsolved on macOS now, apart from notarisation — and that is a
+decision, not a gap.
 
 ### Tests
 

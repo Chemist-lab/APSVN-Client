@@ -22,7 +22,10 @@ $ver = (Select-String -Path (Join-Path $PSScriptRoot "app.py") `
 "APSVN $ver"
 $stage = Join-Path ([IO.Path]::GetTempPath()) ("apsvn_pkg_" + [Guid]::NewGuid().ToString("N"))
 $dest = Join-Path $stage $name
-$zip = Join-Path (Split-Path $src -Parent) "$name.zip"
+# Імʼя з версією, як і в маківської збірки. Без цього на сторінці релізів
+# через рік лежать десять файлів APSVN.zip, і завантаживши один, не скажеш,
+# яка це версія.
+$zip = Join-Path (Split-Path $src -Parent) "$name-$ver.zip"
 
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
 $rc = @($src, $dest, "/E",

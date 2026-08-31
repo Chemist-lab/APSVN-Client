@@ -195,7 +195,7 @@ to submit.
 
 ## Giving APSVN to somebody else
 
-Run `package.ps1` — it puts `APSVN.zip` next to the folder (about 20 MB
+Run `package.ps1` — it puts `APSVN-<version>.zip` next to the folder (about 20 MB
 compressed, 43 MB unpacked). Everything the artist needs is inside; there is
 nothing to install.
 

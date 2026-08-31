@@ -254,6 +254,7 @@ generic.)
 | `ui/`           | the interface (HTML/CSS/JS) |
 | `runtime/`      | Python 3.14 embeddable — so nothing has to be installed |
 | `runtime-mac/`  | the same idea on macOS: a portable python.org framework, built by `make_runtime_mac.sh` |
+| `svn-mac/`      | a portable Subversion for macOS, built by `make_svn_mac.sh` |
 | `vendor/`       | pywebview, keyring and their dependencies |
 | `svn/`          | SlikSvn (Subversion CLI, Apache-2.0) |
 | `explorer.py`   | the Explorer: one folder at a time |
@@ -522,15 +523,16 @@ simply refuses to start, so the build would be dead without it.
 
 ```bash
 ./make_runtime_mac.sh   # once — builds the portable Python into runtime-mac/
+./make_svn_mac.sh       # once — builds the portable svn into svn-mac/
 ./package_mac.sh
 ```
 
 It has been run — on macOS 27 (Apple Silicon), Python 3.14, svn 1.14.5 from
 Homebrew. The window comes up, the WKWebView bridge works, icons come from the
 system, and the packaged `.app` starts from a fresh unpack on a machine that has
-no Python of its own. Nothing was wrong with the *logic*; everything that broke
-broke at the seam between the code and the system, and the git history has each
-one.
+no Python and no svn of its own — the artist installs nothing, exactly as on
+Windows. Nothing was wrong with the *logic*; everything that broke broke at the
+seam between the code and the system, and the git history has each one.
 
 #### The Python inside the bundle
 
@@ -573,11 +575,28 @@ Tests: 445 of the 450 run here. The other five are not skipped for convenience
 and nothing is missing — two exercise the Windows icon backend, and three need
 Unreal Engine actually installed to have anything to look at.
 
-Still not solved: **svn from Homebrew is not relocatable** as it stands (it links
-against `/opt/homebrew/lib/*.dylib`), so the bundle falls back to the system
-`svn` and says so during the build. It is the same `install_name_tool` and rpath
-work `make_runtime_mac.sh` already does for Python, on a smaller target — the
-script is the worked example to copy from.
+#### The svn inside the bundle
+
+`make_svn_mac.sh` does for `svn` what `make_runtime_mac.sh` does for Python, and
+it matters more here: macOS has not shipped `svn` since Xcode 11, so on a clean
+machine there is nothing to borrow at all. It copies `svn` and `svnadmin`, walks
+the dependency closure (22 libraries, 10 MB), rewrites every absolute path to
+`@executable_path`/`@loader_path` and re-signs. 11 MB in total.
+
+One thing there is not obvious and would have shipped broken. **OpenSSL looks for
+its root certificates at a compiled-in absolute path** — for the Homebrew build,
+`/opt/homebrew/etc/openssl@3/cert.pem`, which does not exist on the artist's
+machine. Everything else looks perfect: `svn --version` lists `https`, serf is
+present, the binary has no absolute references left — and then every single
+network action fails with `E230001: issuer is not trusted`. So `cert.pem` is
+copied next to the bundled `svn`, and `svn_client` points `SSL_CERT_FILE` at it —
+with `setdefault`, because a studio that has set its own (a corporate CA on a
+proxy is a real thing) must win over ours. Verified both ways: without the file
+the handshake fails, with it the connection reaches the server and stops at
+authentication, which is the correct answer for a request carrying no password.
+
+Nothing is left unsolved on macOS now, apart from notarisation — and that is a
+decision, not a gap.
 
 ### Tests
 

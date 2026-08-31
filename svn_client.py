@@ -54,6 +54,21 @@ SVNADMIN = os.path.join(os.path.dirname(SVN),
                         "svnadmin.exe" if SVN.lower().endswith(".exe")
                         else "svnadmin")
 
+# Корені сертифікатів для СВОГО svn. OpenSSL, з яким зібраний svn із Homebrew,
+# зашитий на /opt/homebrew/etc/openssl@3/cert.pem — теку, якої на машині
+# художника немає. Перевірено дослідом, а не припущено: без цього КОЖНА дія до
+# https падає з E230001 «issuer is not trusted», хоч serf на місці й https у
+# списку схем. Тому make_svn_mac.sh кладе cert.pem поруч зі своїм svn, а тут ми
+# лише показуємо, де він.
+#
+# setdefault, а не присвоєння: якщо адміністратор студії виставив свій
+# SSL_CERT_FILE (корпоративний ЦС на проксі — річ цілком реальна), його вибір
+# головніший за наш. Через середовище, а не в кожен виклик: підпроцеси
+# успадкують самі, і це не розповзається по файлу.
+_CERT = os.path.join(os.path.dirname(os.path.dirname(SVN)), "cert.pem")
+if not desktop.WINDOWS and os.path.isfile(_CERT):
+    os.environ.setdefault("SSL_CERT_FILE", _CERT)
+
 # файли, які ніколи не потрапляють ані в список, ані в коміт
 JUNK_RE = re.compile(
     r"(\.blend\d+$|\.blend@$|\.mine$|\.r\d+$|\.prej$|\.tmp$|~$|"

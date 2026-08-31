@@ -567,11 +567,21 @@ behind decisions that look odd until you know why.
   name in one pass. Wiping is safe here for a reason worth stating: the
   launcher is a process that lives a fraction of a second and has no window,
   so its manifest and version block do nothing for us.
+* **`package.ps1` redraws the icon and rebuilds the exe every time.** Both are
+  committed — a clone should be runnable at once — but they are build output,
+  and committed build output goes stale in silence. Without those two lines it
+  is enough to edit `make_icon.py` and forget to run it for a release to ship
+  the old icon, with nothing to notice. They run under the **system** Python,
+  not `runtime\python.exe`: the embedded runtime deliberately has no pip, and
+  the launcher stub comes from `pip/_vendor/distlib`.
 * **The icon is drawn by code, not stored as a file.** A binary icon in a
   repository is something nobody can rebuild or adjust by half a shade without
   the same editor and the same person. `make_icon.py` describes it with
   distance fields, so anyone can change it and git shows the change as a
-  change in code.
+  change in code. The same drawing produces `apsvn.ico` for Windows,
+  `apsvn.icns` for macOS and `ui/icon.png` for the header — drawing them
+  separately per platform means they drift apart at the first edit, and nobody
+  notices because nobody holds both up side by side.
 * **The taskbar icon comes from the window, the Explorer icon from the exe.**
   Two different places, and setting one does nothing for the other: the window
   is drawn by pywebview under `runtime\pythonw.exe`, so without

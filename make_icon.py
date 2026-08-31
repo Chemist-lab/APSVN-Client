@@ -156,6 +156,27 @@ def dib(size, rgba):
     return hdr + bytes(body) + mask
 
 
+def icns(sizes):
+    """Іконка для macOS. Формат простий: 'icns', розмір, далі типізовані блоки.
+
+    Робиться тут, а не на маку, з однієї причини: малюнок мусить бути ТОЙ САМИЙ.
+    Дві іконки, намальовані окремо для двох систем, розходяться на першій же
+    правці — і ніхто цього не помічає, бо ніхто не тримає обидві перед очима.
+
+    Типи блоків — це просто домовлені чотирилітерні мітки для розмірів; усередині
+    звичайний PNG, який macOS там приймає.
+    """
+    TYPES = {16: b"ic04", 32: b"ic05", 64: b"ic12",
+             128: b"ic07", 256: b"ic08", 512: b"ic09"}
+    body = b""
+    for s in sizes:
+        if s not in TYPES:
+            continue
+        data = png(s, render(s))
+        body += TYPES[s] + struct.pack(">I", len(data) + 8) + data
+    return b"icns" + struct.pack(">I", len(body) + 8) + body
+
+
 def ico(images):
     """Список (розмір, PNG) -> вміст .ico.
 
@@ -196,6 +217,11 @@ if __name__ == "__main__":
         with open(os.path.join(ui, "icon.png"), "wb") as fh:
             fh.write(png(64, render(64)))
         print("ui/icon.png — 64x64")
+
+    mac = icns((16, 32, 64, 128, 256, 512))
+    with open("apsvn.icns", "wb") as fh:
+        fh.write(mac)
+    print("apsvn.icns — %d байт" % len(mac))
 
     print("apsvn.ico — %d розмірів, %d байт" % (len(imgs), len(data)))
     for s, d in imgs:

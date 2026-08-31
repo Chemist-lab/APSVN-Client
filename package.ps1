@@ -27,6 +27,20 @@ $dest = Join-Path $stage $name
 # яка це версія.
 $zip = Join-Path (Split-Path $src -Parent) "$name-$ver.zip"
 
+# Іконку й запускач ПЕРЕЗБИРАЄМО щоразу. Вони лежать у гіті заради
+# того, щоб клон був одразу запускним, але це результат збірки. Без цих двох
+# рядків достатньо правити make_icon.py і забути його запустити — і в реліз
+# мовчки поїде стара іконка.
+# Саме СИСТЕМНИЙ python, а не runtime\python.exe. Вбудований рантайм навмисне
+# позбавлений pip, а запускач для APSVN.exe береться саме звідти — з
+# pip/_vendor/distlib. Під рантаймом збірка падала на «не знайшов w64.exe»,
+# і то в кращому разі: перевірка нижче її зупиняє, а не пропускає далі.
+$py = (Get-Command python -ErrorAction SilentlyContinue).Source
+if (-not $py) { $py = Join-Path $src "runtime\python.exe" }
+& $py (Join-Path $src "make_icon.py") | Out-Null
+& $py (Join-Path $src "make_launcher.py") | Out-Null
+if (-not (Test-Path (Join-Path $src "APSVN.exe"))) { throw "APSVN.exe не зібрався" }
+
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
 $rc = @($src, $dest, "/E",
         "/XD", "tests", "__pycache__",

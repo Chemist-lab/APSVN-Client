@@ -286,11 +286,26 @@ def supports_stdin_password():
     мовчки, але пароль не читає — і кожна мережева дія падає з «Authentication
     failed». Тести на file://-репозиторії цього не бачать, бо там автентифікації
     немає взагалі. Тому питаємо сам svn один раз локально, без мережі.
+
+    "-v" додається ЛИШЕ ПОЗА WINDOWS, і це не косметика. svn 1.14.5 з Homebrew
+    ховає глобальні опції з "svn help <підкоманда>": там немає навіть рядка про
+    --password, лише підказка «Use -v to show global and experimental options».
+    Тобто проба казала «не вміє» про збірку, яка вміє — перевірено дослідом на
+    справжньому svnserve з паролем: правильний пароль зі stdin пускає,
+    неправильний відхиляється (tests/exp_stdin_password.py). Наслідок був тихий
+    і неприємний: на маку APSVN ішов запасним шляхом і клав пароль у argv, де
+    його видно в списку процесів.
+
+    Віконну гілку проби не чіпаємо навмисно. Саме її результат (False) уводить
+    SlikSvn на запасний шлях, а SlikSvn прапорець приймає й ігнорує — тож
+    помилитися тут означає покласти кожну мережеву дію в художника. Перевірити
+    наслідки такої зміни з мака неможливо, отже й змінювати нічого.
     """
     global _stdin_pw
     if _stdin_pw is None:
+        cmd = [SVN, "help", "status"] + ([] if desktop.WINDOWS else ["-v"])
         try:
-            r = subprocess.run([SVN, "help", "status"], capture_output=True,
+            r = subprocess.run(cmd, capture_output=True,
                                **desktop.no_window(),
                                stdin=subprocess.DEVNULL, timeout=30)
             _stdin_pw = "--password-from-stdin" in _dec(r.stdout)

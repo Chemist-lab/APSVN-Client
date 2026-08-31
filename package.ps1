@@ -15,6 +15,11 @@
 $ErrorActionPreference = "Stop"
 $src = $PSScriptRoot
 $name = "APSVN"
+# Версію беремо з app.py, а не дублюємо тут: два місця розійшлися б на
+# першому ж релізі, і кнопка оновлення почала б брехати.
+$ver = (Select-String -Path (Join-Path $PSScriptRoot "app.py") `
+        -Pattern '^VERSION = "([^"]+)"').Matches[0].Groups[1].Value
+"APSVN $ver"
 $stage = Join-Path ([IO.Path]::GetTempPath()) ("apsvn_pkg_" + [Guid]::NewGuid().ToString("N"))
 $dest = Join-Path $stage $name
 $zip = Join-Path (Split-Path $src -Parent) "$name.zip"

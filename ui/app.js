@@ -1360,7 +1360,8 @@ function menuOpen(on) {
   const show = on === undefined ? m.classList.contains("hidden") : on;
   m.classList.toggle("hidden", !show);
   $("b-menu").classList.toggle("on", show);
-  if (show) $("menu-name").textContent = (st && st.name) || "";
+  if (show) $("menu-name").textContent =
+    ((st && st.name) || "") + ((st && st.version) ? "  ·  APSVN " + st.version : "");
 }
 
 $("b-menu").onclick = e => { e.stopPropagation(); menuOpen(); };

@@ -47,6 +47,10 @@ CONF_DIR = os.path.join(os.environ.get("APPDATA", "."), "APSVN")
 CONF = os.path.join(CONF_DIR, "config.json")
 LOG = os.path.join(CONF_DIR, "error.log")
 RESCUE = os.path.join(CONF_DIR, "rescue")
+# Номер версії — єдине місце на весь проєкт. Збірка бере його звідси,
+# і оновлення порівнюватиме його з тим, що лежить на сервері.
+VERSION = "1.0.0"
+
 KEYRING_SERVICE = "APSVN"
 FORMAT = 2
 
@@ -340,6 +344,7 @@ class Api:
         base = {"configured": True, "pid": pid, "projects": self._brief(),
                 "current": pid, "name": p.get("name") or "project",
                 "wc": p.get("wc"), "me": p.get("username"),
+                "version": VERSION,
                 "prefs": self.conf.get("prefs", {})}
 
         if not self._lock.acquire(blocking=False):

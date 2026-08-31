@@ -66,6 +66,23 @@ else
   echo "  svn: свого немає, покладаємось на системний ($(command -v svn || echo 'НЕ ЗНАЙДЕНО'))"
 fi
 
+# --- свій Python -------------------------------------------------------------
+# runtime-mac/ робить make_runtime_mac.sh. Це двійник теки runtime/ на Windows:
+# без неї .app позичає системний python (див. довгий коментар у запускачі),
+# з нею — художник не встановлює нічого, і в Dock написано APSVN, а не Python.
+RUNTIME=""
+if [ -d "$SRC/runtime-mac/Python.framework" ] && [ -x "$SRC/runtime-mac/python3" ]; then
+  mkdir -p "$APP/Contents/Frameworks"
+  cp -R "$SRC/runtime-mac/Python.framework" "$APP/Contents/Frameworks/"
+  cp "$SRC/runtime-mac/python3" "$APP/Contents/MacOS/python3"
+  chmod +x "$APP/Contents/MacOS/python3"
+  RUNTIME="$(ls -1 "$APP/Contents/Frameworks/Python.framework/Versions" \
+             | grep -E '^3\.[0-9]+$' | sort -Vr | head -1)"
+  echo "  python: свій, $RUNTIME (у Contents/Frameworks)"
+else
+  echo "  python: свого немає, покладаємось на системний — ./make_runtime_mac.sh" >&2
+fi
+
 # --- запускач ----------------------------------------------------------------
 # Окремий скрипт, а не прямий виклик python: у .app виконуваний файл мусить
 # бути один і лежати саме в MacOS/, а Python треба ще й показати, де vendor.
@@ -80,7 +97,32 @@ fi
 # зовсім — а перевірка «python3 app.py» цього не показує НІКОЛИ.
 #
 # Тому питаємо не версію, а саму придатність: чи вміє цей python підняти те,
-# що лежить у vendor. Версію можна вгадати неправильно, імпорт — ні.
+# що лежить у vendor. Версію можна вгадати неправильно, імпорт — ні. Ця гілка
+# лишається запасною: коли рантайм у комплекті, шукати нема чого.
+if [ -n "$RUNTIME" ]; then
+
+# Свій Python — і саме тому exec іде в бінарник УСЕРЕДИНІ нашого bundle. Це не
+# дрібниця: коли запускали системний, він re-exec'ився через власний Python.app,
+# і LaunchServices зараховувала той bundle — у Dock писало «Python», іконка й
+# назва були чужі. Достатньо, щоб виконуваний файл лежав у наших Contents/MacOS,
+# і застосунок стає собою: cloud.altpicture.apsvn.
+#
+# PYTHONHOME задаємо явно. Стаб узятий з Python.app усередині фреймворку, а
+# лежить тепер у Contents/MacOS — тобто орієнтири, за якими CPython сам шукає
+# стандартну бібліотеку, з-під нього більше не видно. Вгадувати тут нічого:
+# кажемо прямо, де вона.
+cat > "$APP/Contents/MacOS/$APP_NAME" <<LAUNCH
+#!/bin/bash
+HERE="\$(cd "\$(dirname "\$0")" && pwd)"
+DIR="\$(cd "\$HERE/../Resources" && pwd)"
+export PYTHONHOME="\$HERE/../Frameworks/Python.framework/Versions/$RUNTIME"
+export PYTHONPATH="\$DIR:\$DIR/vendor"
+export PYTHONDONTWRITEBYTECODE=1
+exec "\$HERE/python3" "\$DIR/app.py" "\$@"
+LAUNCH
+
+else
+
 cat > "$APP/Contents/MacOS/$APP_NAME" <<'LAUNCH'
 #!/bin/bash
 DIR="$(cd "$(dirname "$0")/../Resources" && pwd)"
@@ -120,6 +162,8 @@ for). Install it from python.org or with: brew install python
 APSVN will start by itself once it is there." with title "APSVN" buttons {"OK"} default button 1 with icon stop' >/dev/null 2>&1
 exit 1
 LAUNCH
+
+fi
 chmod +x "$APP/Contents/MacOS/$APP_NAME"
 
 # --- Info.plist --------------------------------------------------------------
@@ -150,7 +194,10 @@ PLIST
 # Компілюємо ДО підпису: інакше або запуск пише .pyc у bundle і ламає пломбу,
 # або (з PYTHONDONTWRITEBYTECODE) кожен старт компілює наново. Якщо в художника
 # інша мінорна версія Python, ці .pyc просто ігноруються — це не помилка.
-PYTHONPATH="$SRC/vendor" "$PY" -m compileall -q "$APP/Contents/Resources" \
+# unchecked-hash з тієї ж причини, що й для бібліотеки в make_runtime_mac.sh:
+# байт-код, звірений за часом, не переживає копіювання й розпакування.
+PYTHONPATH="$SRC/vendor" "$PY" -m compileall -q -f \
+  --invalidation-mode unchecked-hash "$APP/Contents/Resources" \
   >/dev/null 2>&1 || true
 
 # --- ad-hoc підпис -----------------------------------------------------------

@@ -334,7 +334,16 @@ behind decisions that look odd until you know why.
   fails with “Authentication failed”. So `supports_stdin_password()` asks svn
   itself, and the `--password` fallback is offset by svn's own credential cache
   (encrypted with DPAPI on Windows) so the password sits in argv once rather
-  than on every call.
+  than on every call. **The same probe was blind on macOS, the other way
+  round:** svn 1.14.5 from Homebrew hides global options from
+  `svn help <subcommand>` — there is not even a line about `--password`, only a
+  hint to pass `-v` — so the probe answered “cannot” about a build that can, and
+  the password went into argv for nothing. `-v` is therefore added off Windows
+  only; the Windows probe is left exactly as it was, because there a wrong
+  answer means every network action fails for the artist. That Homebrew's svn
+  really does read stdin was established on a live `svnserve` that demands a
+  password, not from the help text that had just lied:
+  `tests/exp_stdin_password.py`.
 * **“You are behind” is a count of files, never a difference of revision
   numbers.** It used to be `HEAD - <working copy revision>`, and it told an
   artist to *get the latest* the moment they finished submitting themselves.
@@ -514,16 +523,44 @@ simply refuses to start, so the build would be dead without it.
 ./package_mac.sh
 ```
 
-**Everything under macOS is written but unrun.** It was developed on Windows,
-so treat `shellicon_mac.py` and `package_mac.sh` as drafts to be checked on a
-real Mac first. What *was* verified from Windows is that the macOS branches are
-chosen correctly and degrade to “no icon” rather than an exception — see
-`tests/test_desktop.py`, which fakes the platform flags and exercises them.
+It has now been run — on macOS 27 (Apple Silicon), Python 3.14, svn 1.14.5 from
+Homebrew. The window comes up, the WKWebView bridge works, icons come from the
+system, and the packaged `.app` starts from a fresh unpack. What the first real
+run cost is written up in the git history; the short version is that nothing was
+wrong with the *logic*, and everything that broke broke at the seams between the
+code and the system.
 
-Not yet solved: svn from Homebrew is not relocatable as it stands (it links
-against `/opt/homebrew/lib/*.dylib`), so the bundle currently falls back to the
-system `svn` and says so during the build. Making it portable means
-`install_name_tool` and rpath work — a job of its own.
+Two of those are worth knowing before touching the build again:
+
+* **the launcher must ask, not assume.** Finder gives an app a minimal `PATH`,
+  so `python3` there is Apple's 3.9 — while `vendor/` holds a PyObjC compiled
+  for 3.14, which 3.9 cannot load. A double-click died on the import while
+  `python3 app.py` in a terminal kept working. The launcher now tries each
+  candidate with `import webview, objc, keyring` and takes the first that
+  answers;
+* **nothing may be written inside the bundle after signing.** The first launch
+  put 174 `.pyc` files into it and broke the signature seal. Bytecode is
+  compiled during the build, before `codesign`.
+
+Tests: 445 of the 450 run here. The other five are not skipped for convenience
+and nothing is missing — two exercise the Windows icon backend, and three need
+Unreal Engine actually installed to have anything to look at.
+
+Not yet solved, in the order they will bite:
+
+* **the artist still has to have Python 3.14.** This is the one that breaks the
+  promise on the box: on Windows `runtime/` ships inside the folder and nothing
+  is installed, while the `.app` borrows the system Python and merely says so
+  politely when there is none. The fix is the macOS twin of `runtime/` — a
+  framework Python inside `Contents/Frameworks`;
+* **the Dock says “Python”.** A framework Python re-execs through its own
+  `Python.app`, so LaunchServices credits that bundle and not ours — the icon
+  and the name in the Dock are Python's. Bundling the runtime above fixes this
+  too, which is why it is one job and not two;
+* **svn from Homebrew is not relocatable** as it stands (it links against
+  `/opt/homebrew/lib/*.dylib`), so the bundle falls back to the system `svn` and
+  says so during the build. Making it portable means `install_name_tool` and
+  rpath work — a job of its own.
 
 ### Tests
 

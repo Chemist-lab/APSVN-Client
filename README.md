@@ -544,6 +544,39 @@ behind decisions that look odd until you know why.
   called by nothing. Bringing the screen back is a dozen lines in `ui/app.js`;
   deleting them now would mean writing the same thing twice. There is a comment
   above them saying so, because dead-looking code invites tidying.
+* **The launcher is distlib's, not PyInstaller's.** PyInstaller would give a
+  7 MB exe — a whole Python inside a wrapper whose only job is to hand over
+  control, a third of the weight of the program itself — and antivirus
+  software picks at such files constantly. distlib's launcher ships inside
+  every pip: 101 KB, the same bytes that sit behind every installed console
+  command, and therefore familiar to scanners. The format is documented and
+  trivial: the exe, then `#!path-to-python`, then a zip holding `__main__.py`.
+  **The relative path in the shebang works** — established by experiment,
+  because everything depended on it: the build is unpacked who-knows-where, so
+  an absolute path baked in on the build machine would point at nothing.
+* **Icons inside an exe must be DIB, not PNG.** In an `.ico` file PNG is
+  accepted anywhere, which makes doing it uniformly tempting. Inside a PE
+  resource Windows reads PNG only at 256; everything smaller must be DIB. Our
+  icon group was therefore unreadable, the exe showed the launcher's Python
+  logo, and **nothing reported an error** — it silently fell back to another
+  group.
+* **All resources are wiped before ours are written.** Giving our icon group
+  the number 1 against the launcher's 101 should have been enough by directory
+  order. It was not, again silently. Deleting foreign entries one by one does
+  not work either — `UpdateResource` refuses to delete and re-add the same
+  name in one pass. Wiping is safe here for a reason worth stating: the
+  launcher is a process that lives a fraction of a second and has no window,
+  so its manifest and version block do nothing for us.
+* **The icon is drawn by code, not stored as a file.** A binary icon in a
+  repository is something nobody can rebuild or adjust by half a shade without
+  the same editor and the same person. `make_icon.py` describes it with
+  distance fields, so anyone can change it and git shows the change as a
+  change in code.
+* **The taskbar icon comes from the window, the Explorer icon from the exe.**
+  Two different places, and setting one does nothing for the other: the window
+  is drawn by pywebview under `runtime\pythonw.exe`, so without
+  `desktop.set_window_icon()` the taskbar would keep showing the Python logo
+  next to an APSVN.exe that already looks right.
 * **Progress is only shown where it was actually measured.** Downloading one
   version is exact — the size is known in advance and the temporary file can be
   watched. Uploading is not: svn prints nothing while sending, and its read

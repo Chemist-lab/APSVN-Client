@@ -32,6 +32,9 @@ $rc = @($src, $dest, "/E",
         "/XD", "tests", "__pycache__",
         # Збіркове знаряддя не їде до художника — ні наше, ні маківське.
         "/XF", "*.pyc", "package.ps1", "*.sh", "*.apsvn-part",
+        # Збиральне: малює іконку й зшиває запускач. Готові apsvn.ico,
+        # APSVN.exe і ui\icon.png їдуть, а те, чим їх зроблено, — ні.
+        "make_icon.py", "make_launcher.py", "peres.py",
         "/NFL", "/NDL", "/NJH", "/NJS", "/NP")
 & robocopy @rc | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed: $LASTEXITCODE" }

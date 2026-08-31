@@ -1160,7 +1160,16 @@ if __name__ == "__main__":
             window.events.closing += _on_closing
         except Exception:
             pass
-        webview.start()
+        # Іконку ставимо ПІСЛЯ того, як вікно з'явилось: до того шукати нема
+        # чого. pywebview кличе цю функцію вже з піднятим інтерфейсом.
+        def _dress():
+            for _ in range(20):            # вікно з'являється не миттєво
+                if desktop.set_window_icon("APSVN",
+                                           os.path.join(APP_DIR, "apsvn.ico")):
+                    return
+                time.sleep(0.25)
+
+        webview.start(_dress)
     except SystemExit:
         raise
     except Exception:

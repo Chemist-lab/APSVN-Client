@@ -143,6 +143,54 @@ def app_bundle(path):
         d = parent
 
 
+# ------------------------------------------------------- іконка вікна
+def set_window_icon(title, ico_path):
+    """Поставити іконку вікна — вона ж і на панелі задач.
+
+    ЧОМУ ЦЕ ОКРЕМА РОБОТА. Вікно малює pywebview, а сам процес — це pythonw з
+    теки runtime, тож панель задач показує логотип Python, хоч у самого
+    APSVN.exe іконка вже наша. Ці дві іконки беруться з різних місць: у
+    Провіднику — з ресурсів exe, на панелі задач — з ВІКНА.
+
+    Вікно шукаємо за заголовком, бо pywebview не віддає його дескриптор. Це
+    єдине незручне місце, і воно не страшне: помилитися можна хіба з іншим
+    вікном, яке зветься так само, а невдача тут коштує лише чужої іконки.
+
+    Поза Windows нічого не робимо: на маку іконку несе сам bundle.
+    """
+    if not WINDOWS or not os.path.isfile(ico_path):
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        u = ctypes.WinDLL("user32", use_last_error=True)
+        u.FindWindowW.restype = wintypes.HWND
+        u.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+        u.LoadImageW.restype = wintypes.HANDLE
+        u.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR,
+                                 wintypes.UINT, ctypes.c_int, ctypes.c_int,
+                                 wintypes.UINT]
+        u.SendMessageW.restype = ctypes.c_void_p
+        u.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT,
+                                   ctypes.c_void_p, ctypes.c_void_p]
+        hwnd = u.FindWindowW(None, title)
+        if not hwnd:
+            return False
+        IMAGE_ICON, LR_LOADFROMFILE = 1, 0x0010
+        WM_SETICON = 0x0080
+        # Два розміри окремо: маленький іде в заголовок і Alt+Tab, великий —
+        # на панель задач. Одного не досить, Windows не масштабує його сама.
+        for which, cx, cy in ((0, 16, 16), (1, 32, 32)):
+            h = u.LoadImageW(None, ico_path, IMAGE_ICON, cx, cy,
+                             LR_LOADFROMFILE)
+            if h:
+                u.SendMessageW(hwnd, WM_SETICON,
+                               ctypes.c_void_p(which), ctypes.c_void_p(h))
+        return True
+    except Exception:
+        return False
+
+
 # ------------------------------------------------------------------ пошук svn
 def svn_candidates(app_dir):
     """Де шукати svn, від найбажанішого до найвипадковішого.

@@ -118,15 +118,7 @@
          те, що в обраному коміті сталося. Третьої панелі з diff немає
          навмисно — див. revision_files() у svn_client.py. -->
     <section id="tab-history" class="hidden">
-      <!-- Два питання про минуле, а не дві вкладки. «Усі коміти» відповідає
-           на «що сталося тоді», «Що зникло» — на «чого зараз бракує». Раніше
-           друге було окремою вкладкою в панелі, і поруч із History виглядало
-           як її дублікат. -->
-      <div class="hmode">
-        <button id="hm-log" class="hmode-b on">All commits</button>
-        <button id="hm-gone" class="hmode-b">What went missing</button>
-      </div>
-      <div id="hist-both" class="br-split">
+      <div class="br-split">
         <div id="log"></div>
         <div class="hist-right">
           <aside id="hist-side" class="hist-side">
@@ -141,7 +133,6 @@
           </div>
         </div>
       </div>
-      <div id="deleted" class="hidden"></div>
     </section>
 
     <!-- історія ОДНОГО файлу: накриває область, тож «Discard my changes»

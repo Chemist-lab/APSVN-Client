@@ -168,24 +168,6 @@ was *just before* it — in that commit itself it no longer exists. The dialog
 says so before you agree. Files you have unsubmitted changes in are left alone
 and listed by name afterwards, rather than quietly overwritten.
 
-### What went missing
-
-The second mode of **Project history** — the switch sits above the commit
-list. It lists everything that disappeared from the project and never came
-back, and who removed it. **⟲ Bring this file back** returns it together with
-its history, not as a brand-new file.
-
-Two modes rather than two tabs, because they answer two different questions
-about the same past. *All commits* answers **“what happened then”**; it reaches
-back 40 commits. *What went missing* answers **“what is absent now”**; it walks
-200 commits from the very beginning and shows only what is still gone — a file
-deleted at r12 and re-created at r30 does not appear.
-
-That difference is why the mode still exists at all. Once you can bring files
-back straight from a commit, listing deletions looks redundant — until an
-artist notices something is missing and has no idea which commit removed it,
-possibly long past the 40 the commit list holds.
-
 ### Several projects
 
 The dropdown at the top left switches projects, **＋** adds one. The password
@@ -550,13 +532,18 @@ behind decisions that look odd until you know why.
   the bundle; outside one it answers `None`, which is the ordinary state when
   running from source. Verified by actually updating a real `.app`: the old
   build is gone, the signature is intact, and the program relaunches itself.
-* **Deleted files stopped being a tab.** It sat in the sidebar at the same
-  weight as the things people use daily, next to a History that had just
-  learned to bring files back from any commit — so it read as a duplicate of
-  its neighbour. It is now a switch above the commit list. Nothing was
-  removed: the two modes answer different questions (see *What went missing*),
-  and folding the rare one into the tab it belongs to costs a click and saves a
-  permanent piece of furniture.
+* **The list of deleted files is gone from the interface, and its code is
+  not.** It was a tab, then a switch inside History, and at each step the same
+  doubt: is anyone using it? On the real project it surfaced two leftover
+  benchmark files and nothing else — no case of the kind it exists for. Space
+  in the interface is paid for every day; an unanswered question is not worth
+  that rent.
+  What it answered has not gone away, though: *a file is missing and I have no
+  idea when it went*. History holds 40 commits and needs you to know which one.
+  So `Api.list_deleted()` and `Api.restore_deleted()` stay — working, tested,
+  called by nothing. Bringing the screen back is a dozen lines in `ui/app.js`;
+  deleting them now would mean writing the same thing twice. There is a comment
+  above them saying so, because dead-looking code invites tidying.
 * **Progress is only shown where it was actually measured.** Downloading one
   version is exact — the size is known in advance and the temporary file can be
   watched. Uploading is not: svn prints nothing while sending, and its read

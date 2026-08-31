@@ -350,15 +350,4 @@ button.ghost.wide.has-news::after{content:"";position:absolute;right:10px;
    порожні квадрати там, де вони були. */
 *::-webkit-scrollbar-button{display:none;width:0;height:0}
 
-/* --- два режими History ---------------------------------------------------
-   Перемикач, а не вкладки: обидва режими відповідають на питання про минуле,
-   просто на різні. «Усі коміти» — що сталося тоді, «Що зникло» — чого зараз
-   бракує. */
-.hmode{display:flex;gap:2px;padding:8px 12px;border-bottom:1px solid var(--line);
- background:var(--panel)}
-.hmode-b{background:none;border:none;color:var(--dim);cursor:pointer;
- padding:6px 13px;border-radius:7px;font-size:13px}
-.hmode-b:hover{color:var(--tx)}
-.hmode-b.on{background:#1d2430;color:var(--tx)}
 #tab-history{display:flex;flex-direction:column}
-#deleted{flex:1;overflow-y:auto;padding:10px 14px}

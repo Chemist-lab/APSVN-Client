@@ -378,22 +378,15 @@ function showBroken(s) {
 
 // внутрішні режими -> кнопки вкладок. Історія ОДНОГО файлу лишає підсвіченими
 // «Файли», бо вона відкривається саме звідти.
-// «deleted» більше не окрема вкладка — це режим усередині History, тож
-// підсвічує ту саму кнопку.
 const TAB_OF = { files: "files", file: "files", log: "history",
-                 deleted: "history", browse: "browse" };
+                 browse: "browse" };
 
 function showView(v) {
   view = v;
   $("tab-broken").classList.add("hidden");
   $("filehist").classList.toggle("hidden", v !== "file");
   $("tab-files").classList.toggle("hidden", v !== "files");
-  const hist = v === "log" || v === "deleted";
-  $("tab-history").classList.toggle("hidden", !hist);
-  $("hist-both").classList.toggle("hidden", v !== "log");
-  $("deleted").classList.toggle("hidden", v !== "deleted");
-  $("hm-log").classList.toggle("on", v === "log");
-  $("hm-gone").classList.toggle("on", v === "deleted");
+  $("tab-history").classList.toggle("hidden", v !== "log");
   $("tab-browse").classList.toggle("hidden", v !== "browse");
   document.querySelectorAll(".tab").forEach(
     b => b.classList.toggle("on", b.dataset.tab === TAB_OF[v]));
@@ -1279,41 +1272,6 @@ async function folderLock(it) {
 
 /* --- видалені файли ---------------------------------------------------- */
 
-async function loadDeleted() {
-  const box = $("deleted");
-  box.innerHTML = "<div class='empty'>Looking for what went missing…</div>";
-  let rows = [];
-  try { rows = await api().list_deleted(); }
-  catch (e) { box.innerHTML = ""; return toast(clean(e), 8000); }
-  box.innerHTML = "";
-  if (!rows.length) {
-    box.innerHTML = "<div class='empty'>Nothing was ever deleted 🎉</div>";
-    return;
-  }
-  for (const r of rows) {
-    const d = document.createElement("div"); d.className = "f";
-    const p = document.createElement("div"); p.className = "p";
-    p.textContent = r.path; p.title = r.path;
-    const meta = document.createElement("span"); meta.className = "chip";
-    meta.textContent = "removed by " + r.author + " · " + r.date;
-    d.append(p, meta);
-    d.append(mini("⟲ Bring this file back", "", () => {
-      ask({
-        title: "Bring “" + r.path + "” back?",
-        lines: ["It will come back exactly as it was before it was deleted."],
-        facts: [["From", "commit " + r.rev], ["Deleted by", r.author],
-                ["When", r.date]],
-        ok: "Bring it back",
-      }).then(a => {
-        if (a.ok)
-          act("restore_deleted", [r.path, r.rev], "Bringing the file back…")
-            .then(loadDeleted);
-      });
-    }));
-    box.append(d);
-  }
-}
-
 /* --- дії -------------------------------------------------------------- */
 
 async function act(method, args, text) {
@@ -1608,19 +1566,9 @@ $("s-go").onclick = async () => {
 document.querySelectorAll(".tab").forEach(b => b.onclick = async () => {
   const t = b.dataset.tab;
   if (t === "browse") { showView("browse"); return openDir(brPath); }
-  // Вкладка History памʼятає, у якому режимі її лишили: людина, яка шукає
-  // зникле, зазвичай шукає його не одним заходом.
-  if (t === "history") return histMode(view === "deleted" ? "deleted" : "log");
+  if (t === "history") { showView("log"); return loadLog(); }
   showView("files"); renderFiles();
 });
-
-function histMode(v) {
-  showView(v);
-  return v === "deleted" ? loadDeleted() : loadLog();
-}
-
-$("hm-log").onclick = () => histMode("log");
-$("hm-gone").onclick = () => histMode("deleted");
 
 /* --- історія проєкту -------------------------------------------------
    Дві панелі: ліворуч коміти, праворуч — що в обраному сталося.

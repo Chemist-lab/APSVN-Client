@@ -484,6 +484,34 @@ behind decisions that look odd until you know why.
   one with unsubmitted changes; aborting everything because of it is punishment,
   not safety. Each file is attempted on its own, and the ones left alone are
   listed by name with the reason.
+* **The program cannot replace itself while it is running, so it does not
+  try.** Windows holds every file that is currently executing — including the
+  python running the update. So the order is: download, unpack alongside,
+  write a swap script, launch it detached, exit. It waits for us to disappear
+  and only then moves the folders. Doing it live gives a half-replaced build
+  that does not start at all, which is not an update but the destruction of
+  the program.
+* **The old folder is renamed, not deleted.** Renaming is instant and
+  reversible: if the swap fails, it goes back and the artist is left with the
+  old working program rather than none. Settings, passwords and the working
+  copy live outside the program folder and are never touched.
+* **`DETACHED_PROCESS` is the wrong flag for this, and wrong in the worst
+  way.** It leaves the process with no console at all, and a batch file needs
+  one — `tasklist` and `ping` do nothing without it. The script would launch,
+  do nothing, and the program would close having downloaded everything and
+  changed nothing. `CREATE_NO_WINDOW` gives a console that is simply hidden.
+  Found by `tests/test_updater.py`, which runs the real swap in a sandbox.
+* **The generated script is pure ASCII.** Console codepage cp866 covers
+  Russian Cyrillic but has no ‹і›, ‹ї›, ‹є›, ‹ґ›. One Ukrainian comment in
+  that file and the update dies at the last step, after everything has been
+  downloaded. The explanations live in `updater.py`; the throwaway script gets
+  none.
+* **The downloaded archive is checked before anything is swapped**: its size
+  against what the release declares, that it opens, that it contains `app.py`,
+  `ui/index.html` and `svn_client.py`, and that no entry tries to write
+  outside the staging folder. The last one is zip-slip — cheap to check, and
+  the cost of missing it is not “no update” but “something overwritten
+  elsewhere”.
 * **Progress is only shown where it was actually measured.** Downloading one
   version is exact — the size is known in advance and the temporary file can be
   watched. Uploading is not: svn prints nothing while sending, and its read
@@ -491,6 +519,20 @@ behind decisions that look odd until you know why.
   so a percentage there would be invented. The remaining time for an upload is
   an estimate from throughput measured on this user's earlier transfers, and it
   is marked `≈`.
+
+### Updating itself
+
+**⚙ Settings → ⬆ Check for updates.** APSVN also looks once, quietly, three
+seconds after it starts — if there is nothing new the artist never finds out
+it looked. When there is, a dot appears on the Settings button and the menu
+item reads *Update to 1.1.0*. No pop-up interrupts the work: a program that
+nags about updates teaches people to close its windows without reading them.
+
+Publishing a new version is: bump `VERSION` in `app.py`, run `package.ps1`,
+create a release on GitHub tagged `v<VERSION>` and attach the zip. The client
+reads `/releases/latest`, needs no authentication while the repository is
+public, and picks the asset for the system it is running on (`-mac.zip` or
+not).
 
 ### macOS
 
@@ -527,7 +569,7 @@ system `svn` and says so during the build. Making it portable means
 
 ### Tests
 
-Without a server — 450 checks against a temporary `file://` repository; they
+Without a server — 482 checks against a temporary `file://` repository; they
 leave nothing behind:
 
 ```bash
@@ -552,6 +594,10 @@ runtime\python.exe tests\test_apsvn.py
   visible, that the old buttons could not resolve the tree ones, that the
   new ones do, that a rescue copy is taken first, and that none of them
   can be submitted;
+* `test_updater.py` — updating: version comparison (1.10 is newer than
+  1.9), which asset belongs to which system, a truncated download, a
+  foreign or zip-slip archive, and **the folder swap run for real** in a
+  sandbox — real script, real renames, real relaunch;
 * `test_desktop.py` — the platform layer: that `no_window()` cannot hand
   Popen a Windows-only flag on POSIX, where settings live on each system,
   the AppleScript escaping, and that the macOS icon branch imports and

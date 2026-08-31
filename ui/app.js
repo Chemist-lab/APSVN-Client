@@ -1365,7 +1365,61 @@ function menuOpen(on) {
 }
 
 $("b-menu").onclick = e => { e.stopPropagation(); menuOpen(); };
-for (const id of ["b-fix", "b-server", "b-forget"])
+
+/* --- оновлення самої програми ------------------------------------------
+   Перевіряємо раз при старті й мовчимо, якщо все свіже: програма, яка щоразу
+   нагадує про себе, дратує швидше, ніж стара версія. */
+let upInfo = null;
+
+function showUpdateState() {
+  const has = !!(upInfo && upInfo.newer);
+  $("b-update-app").textContent = has
+    ? "\u2b06 Update to " + upInfo.want : "\u2b06 Check for updates";
+  $("b-menu").classList.toggle("has-news", has);
+}
+
+async function checkUpdate(quiet) {
+  try { upInfo = await api().check_update(); }
+  catch (e) { upInfo = null; }
+  showUpdateState();
+  if (quiet) return;
+
+  if (!upInfo || upInfo.state === "offline" || upInfo.state === "error")
+    return toast("Could not reach the update server \u2014 check your internet");
+  if (upInfo.state === "none")
+    return toast("No releases published yet");
+  if (!upInfo.newer)
+    return toast("You have the newest version (" + upInfo.have + ")");
+
+  const lines = ["You have " + upInfo.have + ", the newest is " +
+                 upInfo.want + "."];
+  if (upInfo.notes) lines.push(upInfo.notes);
+  lines.push("APSVN will close and open again by itself. Your projects, " +
+             "passwords and files are not touched \u2014 only the program.");
+  const a = await ask({
+    title: "Update to " + upInfo.want + "?",
+    lines: lines,
+    facts: upInfo.size
+      ? [["download", (upInfo.size / 1048576).toFixed(1) + " MB"]] : [],
+    ok: "Update now", alt: "Open the release page",
+  });
+  if (a.alt) return api().open_link(upInfo.url);
+  if (!a.ok) return;
+
+  busy(true, "Downloading the update\u2026");
+  try {
+    const msg = await api().do_update_app();
+    busy(false);
+    await ask({ title: "Ready", lines: [msg], ok: "Close and update" });
+    api().finish_update();
+  } catch (e) {
+    busy(false);
+    toast(clean(e), 9000);
+  }
+}
+
+$("b-update-app").onclick = () => { menuOpen(false); checkUpdate(false); };
+for (const id of ["b-fix", "b-server", "b-forget", "b-update-app"])
   $(id).addEventListener("click", () => menuOpen(false));
 // клік по самому меню не має його закривати — інакше пункт не встигне спрацювати
 $("menu").onclick = e => e.stopPropagation();
@@ -1778,4 +1832,9 @@ function loop() {
   }, 10000);                          // локи чужих людей мають з’являтись швидко
 }
 
-window.addEventListener("pywebviewready", () => { refresh(); loop(); });
+window.addEventListener("pywebviewready", () => {
+  refresh();
+  loop();
+  // тихо, один раз: якщо нового немає — художник про це навіть не дізнається
+  setTimeout(() => checkUpdate(true), 3000);
+});

@@ -320,3 +320,11 @@ button.primary.has-work{box-shadow:0 0 0 2px #f5a52455}
 .menu-item.bad:hover{background:#2a151a}
 .menu-sep{height:1px;background:var(--line);margin:5px 4px}
 button.ghost.wide.on{color:var(--tx);border-color:#3a4152}
+
+/* Крапка на «Settings», коли є нова версія. Не тост і не вікно: нагадувати
+   про оновлення посеред роботи — найшвидший спосіб навчити людину закривати
+   такі вікна не читаючи. */
+button.ghost.wide.has-news{position:relative}
+button.ghost.wide.has-news::after{content:"";position:absolute;right:10px;
+ top:calc(50% - 3px);width:6px;height:6px;border-radius:50%;
+ background:var(--acc)}

@@ -78,6 +78,7 @@ try:
     import svn_client as sc
     import explorer as ex
     import shellicon as si
+    import updater as up
 except Exception:
     fatal("could not start",
           "Some parts of the application are missing. Most likely APSVN was "
@@ -286,6 +287,90 @@ class Api:
 
     def prefs(self):
         return self.conf.get("prefs", {})
+
+    def open_link(self, url):
+        """Відкрити посилання в браузері — ЛИШЕ наше власне.
+
+        Адреса сюди приходить із відповіді GitHub, тобто зовні. Відкривати
+        будь-що, що прийшло по мережі, означало б віддати чужому
+        серверу право запускати що завгодно на машині художника.
+        Перевірка в один рядок, ціна помилки — неприємна.
+        """
+        u = str(url or "")
+        if not u.startswith("https://github.com/" + up.REPO):
+            return False
+        return desktop.open_path(u)
+
+    # --- оновлення самої програми ---
+    def check_update(self):
+        """Що є на сервері. Ніколи не кидає — інтерфейс сам вирішує, як сказати."""
+        return up.check(VERSION)
+
+    def do_update_app(self):
+        """Завантажити нову збірку, розкласти поруч і передати підміну назовні.
+
+        Програма не може замінити сама себе на ходу: Windows тримає файли, які
+        зараз виконуються, а серед них і python, яким ми працюємо. Тож тут ми
+        доводимо справу до «все готове й перевірене», запускаємо окремий
+        сценарій — і виходимо. Він дочекається, поки нас не стане, і аж тоді
+        поміняє теки.
+
+        Повертає текст для останнього вікна перед закриттям.
+        """
+        if self.busy.is_set():
+            raise sc.SvnError("A transfer is in progress \u2014 finish it first")
+
+        info = up.check(VERSION)
+        if info.get("state") != "ok":
+            raise sc.SvnError("Could not reach the update server")
+        if not info.get("newer"):
+            return "You already have the newest version"
+        if not info.get("download"):
+            raise sc.SvnError("This release has no build for your system")
+
+        work = up.work_dir()
+        os.makedirs(work, exist_ok=True)
+        zip_path = os.path.join(work, info["name"])
+
+        # Поступ тим самим каналом, що й передача файлів: художник уже знає
+        # цю смужку, вигадувати для оновлення другу немає сенсу.
+        def on_bytes(got, total):
+            self._prog = {"phase": "files", "kind": "download",
+                          "done": got >> 20, "total": (total or 0) >> 20,
+                          "pct": int(got * 100 / total) if total else None,
+                          "name": info["name"]}
+
+        self.busy.set()
+        try:
+            up.download(info["download"], zip_path, size=info.get("size"),
+                        progress=on_bytes)
+            staged = up.stage(zip_path, os.path.join(work, "staged"))
+        finally:
+            self.busy.clear()
+            self._prog = None
+
+        install = APP_DIR
+        relaunch = os.path.join(install, "APSVN.bat") if desktop.WINDOWS \
+            else install
+        script = up.write_swap_script(work, staged, install, os.getpid(),
+                                      relaunch)
+        self._pending_update = script
+        return ("APSVN %s is ready. The program will close and reopen by "
+                "itself \u2014 give it a moment." % info["want"])
+
+    def finish_update(self):
+        """Запустити підміну й закритися. Кличеться інтерфейсом ОСТАННІМ."""
+        script = getattr(self, "_pending_update", None)
+        if not script:
+            return False
+        up.launch_detached(script)
+        global _updating
+        _updating = True                # щоб _on_closing не заважав
+        try:
+            window.destroy()
+        except Exception:
+            os._exit(0)
+        return True
 
     def icons(self, exts):
         """Іконки типів файлів — беремо з Windows, а не возимо з собою.
@@ -1032,11 +1117,14 @@ class Api:
 
 
 window = None
+_updating = False       # іде підміна: закриття тоді не треба зупиняти
 api = None
 
 
 def _on_closing():
     """Не дати закрити вікно посеред передачі — це псує робочу копію."""
+    if _updating:
+        return True
     if api is not None and api.busy.is_set():
         desktop.message_box("APSVN",
                             "A transfer is in progress. Please wait — "

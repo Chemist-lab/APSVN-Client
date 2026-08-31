@@ -328,3 +328,24 @@ button.ghost.wide.has-news{position:relative}
 button.ghost.wide.has-news::after{content:"";position:absolute;right:10px;
  top:calc(50% - 3px);width:6px;height:6px;border-radius:50%;
  background:var(--acc)}
+
+/* --- смуги прокрутки ---------------------------------------------
+   Системна смуга Windows — широка, світла й зі стрілками — у темному
+   вікні виглядає чужорідною смугою посеред інтерфейсу.
+
+   Правило одне й глобальне, а не по ідентифікаторах: скрольованих
+   областей тут вісім, і девʼята обовʼязково зʼявиться без смуги.
+
+   Прозора рамка плюс background-clip: content-box дають відступ між
+   повзунком і краєм: без них він прилипає до межі панелі й читається
+   як частина роздільної лінії. */
+*::-webkit-scrollbar{width:11px;height:11px}
+*::-webkit-scrollbar-track{background:transparent}
+*::-webkit-scrollbar-thumb{background:#2b3341;border-radius:8px;
+ border:3px solid transparent;background-clip:content-box}
+*::-webkit-scrollbar-thumb:hover{background:#3b4658;background-clip:content-box}
+*::-webkit-scrollbar-thumb:active{background:#4a586e;background-clip:content-box}
+*::-webkit-scrollbar-corner{background:transparent}
+/* Стрілки на кінцях прибираємо явно: без цього Chromium лишає два
+   порожні квадрати там, де вони були. */
+*::-webkit-scrollbar-button{display:none;width:0;height:0}

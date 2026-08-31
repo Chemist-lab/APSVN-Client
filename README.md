@@ -168,11 +168,23 @@ was *just before* it — in that commit itself it no longer exists. The dialog
 says so before you agree. Files you have unsubmitted changes in are left alone
 and listed by name afterwards, rather than quietly overwritten.
 
-### Deleted files
+### What went missing
 
-The **Deleted files** tab shows everything that ever disappeared from the
-project and who removed it. **⟲ Bring this file back** returns it together with
+The second mode of **Project history** — the switch sits above the commit
+list. It lists everything that disappeared from the project and never came
+back, and who removed it. **⟲ Bring this file back** returns it together with
 its history, not as a brand-new file.
+
+Two modes rather than two tabs, because they answer two different questions
+about the same past. *All commits* answers **“what happened then”**; it reaches
+back 40 commits. *What went missing* answers **“what is absent now”**; it walks
+200 commits from the very beginning and shows only what is still gone — a file
+deleted at r12 and re-created at r30 does not appear.
+
+That difference is why the mode still exists at all. Once you can bring files
+back straight from a commit, listing deletions looks redundant — until an
+artist notices something is missing and has no idea which commit removed it,
+possibly long past the 40 the commit list holds.
 
 ### Several projects
 
@@ -523,6 +535,13 @@ behind decisions that look odd until you know why.
   outside the staging folder. The last one is zip-slip — cheap to check, and
   the cost of missing it is not “no update” but “something overwritten
   elsewhere”.
+* **Deleted files stopped being a tab.** It sat in the sidebar at the same
+  weight as the things people use daily, next to a History that had just
+  learned to bring files back from any commit — so it read as a duplicate of
+  its neighbour. It is now a switch above the commit list. Nothing was
+  removed: the two modes answer different questions (see *What went missing*),
+  and folding the rare one into the tab it belongs to costs a click and saves a
+  permanent piece of furniture.
 * **Progress is only shown where it was actually measured.** Downloading one
   version is exact — the size is known in advance and the temporary file can be
   watched. Uploading is not: svn prints nothing while sending, and its read

@@ -369,7 +369,7 @@ function renderProjects() {
 }
 
 function showBroken(s) {
-  for (const id of ["tab-files", "tab-history", "tab-deleted", "filehist"])
+  for (const id of ["tab-files", "tab-history", "tab-browse", "filehist"])
     $(id).classList.add("hidden");
   $("tab-broken").classList.remove("hidden");
   $("brk-title").textContent = s.broken;
@@ -378,16 +378,22 @@ function showBroken(s) {
 
 // внутрішні режими -> кнопки вкладок. Історія ОДНОГО файлу лишає підсвіченими
 // «Файли», бо вона відкривається саме звідти.
+// «deleted» більше не окрема вкладка — це режим усередині History, тож
+// підсвічує ту саму кнопку.
 const TAB_OF = { files: "files", file: "files", log: "history",
-                 deleted: "deleted", browse: "browse" };
+                 deleted: "history", browse: "browse" };
 
 function showView(v) {
   view = v;
   $("tab-broken").classList.add("hidden");
   $("filehist").classList.toggle("hidden", v !== "file");
   $("tab-files").classList.toggle("hidden", v !== "files");
-  $("tab-history").classList.toggle("hidden", v !== "log");
-  $("tab-deleted").classList.toggle("hidden", v !== "deleted");
+  const hist = v === "log" || v === "deleted";
+  $("tab-history").classList.toggle("hidden", !hist);
+  $("hist-both").classList.toggle("hidden", v !== "log");
+  $("deleted").classList.toggle("hidden", v !== "deleted");
+  $("hm-log").classList.toggle("on", v === "log");
+  $("hm-gone").classList.toggle("on", v === "deleted");
   $("tab-browse").classList.toggle("hidden", v !== "browse");
   document.querySelectorAll(".tab").forEach(
     b => b.classList.toggle("on", b.dataset.tab === TAB_OF[v]));
@@ -1602,10 +1608,19 @@ $("s-go").onclick = async () => {
 document.querySelectorAll(".tab").forEach(b => b.onclick = async () => {
   const t = b.dataset.tab;
   if (t === "browse") { showView("browse"); return openDir(brPath); }
-  if (t === "deleted") { showView("deleted"); return loadDeleted(); }
-  if (t === "history") { showView("log"); return loadLog(); }
+  // Вкладка History памʼятає, у якому режимі її лишили: людина, яка шукає
+  // зникле, зазвичай шукає його не одним заходом.
+  if (t === "history") return histMode(view === "deleted" ? "deleted" : "log");
   showView("files"); renderFiles();
 });
+
+function histMode(v) {
+  showView(v);
+  return v === "deleted" ? loadDeleted() : loadLog();
+}
+
+$("hm-log").onclick = () => histMode("log");
+$("hm-gone").onclick = () => histMode("deleted");
 
 /* --- історія проєкту -------------------------------------------------
    Дві панелі: ліворуч коміти, праворуч — що в обраному сталося.

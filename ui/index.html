@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>APSVN</title>
+<link rel="stylesheet" href="style.css"></head>
+<body>
+<div id="setup" class="hidden">
+  <div class="card">
+    <h1 id="s-title">Connect to a project</h1>
+    <label>Project address <input id="s-url" placeholder="http://192.168.50.18:8090/scm/repo/…"></label>
+    <label>Folder on this computer <span class="row"><input id="s-dir" placeholder="D:\work\project"><button id="s-pick" class="ghost">Browse…</button></span></label>
+    <label>Name for this project <input id="s-name" placeholder="optional"></label>
+    <label>User name <input id="s-user"></label>
+    <label>Password <input id="s-pass" type="password"></label>
+    <span class="row">
+      <button id="s-go" class="primary big">Connect</button>
+      <button id="s-cancel" class="ghost hidden">Cancel</button>
+    </span>
+    <div id="s-msg" class="msg"></div>
+  </div>
+</div>
+
+<div id="main" class="hidden">
+  <header>
+    <div class="brand">APSVN</div>
+    <select id="p-sel" title="project"></select>
+    <button id="p-add" class="ghost" title="add a project">＋</button>
+    <div id="h-behind" class="behind hidden"></div>
+    <div id="h-conflict" class="conflict-badge hidden"></div>
+    <div class="spacer"></div>
+    <div id="h-rev" class="rev"></div>
+    <button id="b-remote" class="ghost" title="check with the server">⟳ Server</button>
+  </header>
+  <aside>
+    <button id="b-update" class="primary big">⬇ Get latest</button>
+    <div class="hint" id="u-hint">pick up your team's newest work</div>
+    <nav>
+      <button data-tab="files" class="tab on">Changes</button>
+      <button data-tab="browse" class="tab">Explorer</button>
+      <button data-tab="history" class="tab">Project history</button>
+      <button data-tab="deleted" class="tab">Deleted files</button>
+    </nav>
+    <div class="foot">
+      <!-- Видимими лишаються дві дії, до яких художник ходить сам: тека з
+           файлами і рятувальні копії, які йому обіцяє кожен небезпечний
+           діалог. Решта — рідкісне й адміністративне — під «Settings». -->
+      <button id="b-open" class="ghost wide">📂 Open folder</button>
+      <button id="b-rescue" class="ghost wide" title="copies made before anything was overwritten">🛟 Safety copies</button>
+
+      <div class="menu-wrap">
+        <button id="b-menu" class="ghost wide">⚙ Settings</button>
+        <div id="menu" class="menu hidden">
+          <div class="menu-head" id="menu-name"></div>
+          <button id="b-fix" class="menu-item" title="if APSVN was closed in the middle of a transfer">🛠 Repair this project</button>
+          <button id="b-server" class="menu-item" title="if the project moved to another server">🔗 Change server address…</button>
+          <div class="menu-sep"></div>
+          <button id="b-forget" class="menu-item bad">Remove project from list</button>
+        </div>
+      </div>
+      <span id="h-wc" class="dim"></span>
+    </div>
+  </aside>
+  <main>
+    <div id="h-warn" class="warn hidden"></div>
+    <div id="h-moved" class="warn moved hidden"></div>
+    <div id="srv" class="warn srv hidden">
+      <div class="srv-row">
+        <span>Project address:</span>
+        <input id="srv-url" spellcheck="false">
+        <button id="srv-save" class="mini">Save</button>
+        <button id="srv-cancel" class="mini">Cancel</button>
+      </div>
+      <div class="srv-hint">Your files stay exactly where they are. This only points the
+        project at a different server — the address must be the same repository.</div>
+    </div>
+
+    <section id="tab-broken" class="hidden">
+      <div class="panel">
+        <h2 id="brk-title">The project folder is not available right now</h2>
+        <div id="brk-path" class="dim big-path"></div>
+        <p>Maybe a drive is not connected, or the folder was moved. <b>Nothing has been lost.</b></p>
+        <span class="row">
+          <button id="brk-retry" class="primary">Try again</button>
+          <button id="brk-where" class="ghost">Show me where it is now…</button>
+          <button id="brk-forget" class="ghost">Remove project from list</button>
+        </span>
+      </div>
+    </section>
+
+    <section id="tab-files">
+      <div id="selbar" class="selbar hidden">
+        <label><input type="checkbox" id="sel-all"> <span id="sel-all-t">Select all</span></label>
+        <span class="spacer"></span>
+        <span id="sel-count" class="dim"></span>
+      </div>
+      <div id="files"></div>
+      <div id="empty" class="empty hidden"></div>
+      <footer id="commitbar">
+        <input id="c-msg" placeholder="What did you do? (for example: jump animation sh010)">
+        <label class="keep" title="by default a file is released when you submit, and becomes read-only again">
+          <input type="checkbox" id="c-keep"> keep my locks</label>
+        <button id="b-commit" class="primary">⬆ Submit</button>
+      </footer>
+    </section>
+
+    <section id="tab-browse" class="hidden">
+      <div class="crumbs"><span id="crumbs"></span>
+        <span class="spacer"></span>
+        <span id="br-count" class="dim"></span></div>
+      <div class="br-split">
+        <aside id="br-tree" class="br-tree"></aside>
+        <div id="br-list"></div>
+        <aside id="br-side" class="br-side">
+          <div class="br-empty">Pick a file to see it here</div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- Дві панелі, як у знайомих людям програмах: ліворуч коміти, праворуч
+         те, що в обраному коміті сталося. Третьої панелі з diff немає
+         навмисно — див. revision_files() у svn_client.py. -->
+    <section id="tab-history" class="hidden">
+      <div class="br-split">
+        <div id="log"></div>
+        <div class="hist-right">
+          <aside id="hist-side" class="hist-side">
+            <div class="br-empty">Pick a commit on the left to see what changed in it</div>
+          </aside>
+          <!-- Смужка вибору живе ПІД панеллю, а не всередині неї: інакше вона
+               їхала б угору разом зі списком і зникала на довгих комітах. -->
+          <div id="ch-bar" class="ch-bar hidden">
+            <label class="ch-all-l"><input type="checkbox" id="ch-all"><span>All</span></label>
+            <span id="ch-count" class="ch-count-t"></span>
+            <button id="ch-restore" class="mini warn" disabled>↺ Bring back</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-deleted" class="hidden">
+      <div id="deleted"></div>
+    </section>
+
+    <!-- історія ОДНОГО файлу: накриває область, тож «Discard my changes»
+         і «Bring back this version» ніколи не видно одночасно -->
+    <section id="filehist" class="hidden">
+      <div class="fh-head">
+        <button id="fh-back" class="ghost">← Back to changes</button>
+        <div id="fh-title" class="fh-title"></div>
+      </div>
+      <div id="fh-note" class="fh-note hidden"></div>
+      <div id="fh-rows"></div>
+    </section>
+  </main>
+</div>
+
+<!-- Накладні шари лежать ПОЗА #main навмисно: під час першого
+     підключення #main прихований, і всередині нього не було б видно
+     ані смуги поступу, ані повідомлень — програма виглядала б
+     застиглою саме тоді, коли йде найдовше завантаження. -->
+  <div id="modal" class="hidden">
+    <div class="mbox" id="m-box">
+      <div class="mtitle" id="m-title"></div>
+      <div class="mtext" id="m-text"></div>
+      <label class="mchk hidden" id="m-chk-wrap">
+        <input type="checkbox" id="m-chk"><span id="m-chk-t"></span></label>
+      <div class="mbtns">
+        <button id="m-cancel" class="ghost"></button>
+        <button id="m-alt" class="ghost hidden"></button>
+        <button id="m-ok" class="primary"></button>
+      </div>
+    </div>
+  </div>
+  <div id="toast" class="hidden"></div>
+  <div id="busy" class="hidden">
+    <div class="spin"></div>
+    <div id="busy-t">Working…</div>
+    <div id="bar-wrap" class="bar-wrap hidden"><div id="bar"></div></div>
+    <div id="busy-sub" class="busy-sub">please keep this window open</div>
+  </div>
+<script src="app.js"></script>
+</body></html>

@@ -1,0 +1,322 @@
+*{box-sizing:border-box;margin:0;font-family:"Segoe UI",system-ui,sans-serif}
+:root{--bg:#0f1115;--panel:#161a22;--line:#232a36;--tx:#e8ecf3;--dim:#8b94a7;
+ --acc:#4f8cff;--ok:#3fce7a;--warn:#f5a524;--bad:#f0546c;--lock:#c99cff}
+body{background:var(--bg);color:var(--tx);height:100vh;overflow:hidden}
+.hidden{display:none!important}
+/* --- перший запуск --- */
+#setup{display:flex;align-items:center;justify-content:center;height:100vh}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+ padding:34px 38px;width:520px}
+.card h1{font-size:20px;margin-bottom:22px}
+.card label{display:block;font-size:13px;color:var(--dim);margin:12px 0 4px}
+.card input{width:100%;background:#0c0e12;border:1px solid var(--line);
+ border-radius:8px;color:var(--tx);padding:10px 12px;font-size:14px}
+.row{display:flex;gap:8px}.row input{flex:1}
+.msg{margin-top:14px;font-size:13px;color:var(--bad);min-height:18px;white-space:pre-wrap}
+/* --- каркас --- */
+#main{display:grid;grid-template:auto 1fr / 240px 1fr;height:100vh}
+header{grid-column:1/3;display:flex;align-items:center;gap:14px;
+ padding:12px 18px;border-bottom:1px solid var(--line);background:var(--panel)}
+.brand{font-weight:700;letter-spacing:.12em;color:var(--acc)}
+.proj{font-size:15px;font-weight:600}.spacer{flex:1}
+.rev{color:var(--dim);font-size:13px}
+.behind{font-size:12.5px;color:var(--warn);background:#3a2a12;
+ border:1px solid var(--warn);border-radius:20px;padding:4px 12px}
+/* --- випадайка проєктів --- */
+#p-sel{background:#0c0e12;border:1px solid var(--line);color:var(--tx);
+ border-radius:9px;padding:7px 10px;font-size:14px;max-width:230px;
+ font-family:inherit}
+#p-add{padding:7px 11px;font-size:15px;line-height:1}
+/* --- зламаний проєкт --- */
+.panel{margin:22px;padding:22px 24px;background:var(--panel);
+ border:1px solid var(--line);border-radius:12px;max-width:620px}
+.panel h2{font-size:17px;margin-bottom:10px}
+.panel p{font-size:13.5px;color:var(--dim);margin:12px 0 16px;line-height:1.5}
+.big-path{font-size:13px!important;color:var(--warn)!important}
+/* --- історія одного файлу --- */
+.fh-head{display:flex;align-items:center;gap:14px;padding:12px 16px;
+ border-bottom:1px solid var(--line);background:var(--panel)}
+.fh-title{font-size:15px;font-weight:600;overflow:hidden;
+ text-overflow:ellipsis;white-space:nowrap}
+.fh-note{margin:12px 16px 0;padding:11px 14px;background:#3a2a12;
+ border:1px solid var(--warn);border-radius:10px;color:var(--warn);
+ font-size:13px;line-height:1.9}
+#fh-rows{flex:1;overflow-y:auto;padding:10px 16px}
+.hr{padding:12px 14px;margin-bottom:8px;border:1px solid var(--line);
+ border-radius:10px;background:#141821}
+.hr .m{margin:3px 0 2px;font-size:13.5px}
+.hr-bar{margin-top:9px;display:flex;gap:8px}
+.mini.warn{color:var(--warn);border-color:#4a3a1a}
+.mini.warn:hover:not(:disabled){border-color:var(--warn)}
+.mini:disabled{opacity:.4;cursor:not-allowed}
+.p.link{cursor:pointer}
+.p.link:hover{color:var(--acc);text-decoration:underline}
+.busy-sub{font-size:12.5px;color:var(--dim);max-width:70%;text-align:center;
+ overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* --- смуга поступу --- */
+.bar-wrap{width:380px;max-width:70vw;height:8px;background:#1d2430;
+ border-radius:6px;overflow:hidden}
+#bar{height:100%;width:0;background:var(--acc);border-radius:6px;
+ transition:width .25s linear}
+/* передача даних, про яку svn мовчить: рух є, відсотків немає — і це чесно */
+#bar.indet{width:35%;animation:slide 1.15s ease-in-out infinite;
+ transition:none}
+@keyframes slide{0%{margin-left:-35%}100%{margin-left:100%}}
+aside{border-right:1px solid var(--line);background:var(--panel);
+ padding:16px;display:flex;flex-direction:column;gap:10px}
+.hint{font-size:12px;color:var(--dim);text-align:center;margin-top:-4px}
+nav{margin-top:18px;display:flex;flex-direction:column;gap:6px}
+.tab{text-align:left;background:none;border:none;color:var(--dim);
+ padding:9px 12px;border-radius:8px;font-size:14px;cursor:pointer}
+.tab.on{background:#1d2430;color:var(--tx)}
+.foot{margin-top:auto;display:flex;flex-direction:column;gap:6px}
+.dim{color:var(--dim);font-size:11px;word-break:break-all;margin-top:6px}
+button.ghost.wide{width:100%;text-align:left}
+main{overflow:hidden;display:flex;flex-direction:column}
+.warn{background:#3a2a12;border-bottom:1px solid var(--warn);color:var(--warn);
+ padding:9px 16px;font-size:13px}
+section{flex:1;display:flex;flex-direction:column;overflow:hidden}
+#files,#log{flex:1;overflow-y:auto;padding:10px 14px}
+/* --- смужка «виділити все» --- */
+.selbar{display:flex;align-items:center;gap:12px;padding:9px 26px 9px 26px;
+ border-bottom:1px solid var(--line);background:var(--panel);font-size:13px}
+.selbar label{display:flex;align-items:center;gap:9px;cursor:pointer;
+ user-select:none}
+.selbar input[type=checkbox]{width:17px;height:17px;accent-color:var(--acc);
+ cursor:pointer}
+.selbar .dim{margin-top:0}
+/* --- рядок файла --- */
+.f{display:flex;align-items:center;gap:12px;padding:10px 12px;border-radius:10px;
+ border:1px solid transparent}
+.f:hover{background:#151a23}
+.f.conflict{border-color:var(--bad);background:#2a151a}
+/* --- кинута тека, розгорнута --- */
+.twisty{background:none;border:none;color:var(--dim);cursor:pointer;
+ font-size:12px;padding:0 2px;width:16px}
+.twisty:hover{color:var(--tx)}
+.f .p.dirname{cursor:pointer;font-weight:600}
+.f .p.dirname:hover{color:var(--acc)}
+.f.child{padding-left:44px;background:#12151c}
+.f.child .p{font-size:13px;color:var(--dim)}
+.child.dim{padding:8px 44px;font-size:12px}
+.f input[type=checkbox]{width:17px;height:17px;accent-color:var(--acc)}
+.f .p{flex:1;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chip{font-size:11.5px;padding:3px 9px;border-radius:20px;background:#1d2430;color:var(--dim)}
+.chip.modified{color:var(--warn)}.chip.added{color:var(--ok)}
+.chip.unversioned{color:var(--acc)}.chip.missing,.chip.deleted{color:var(--bad)}
+.chip.conflicted{background:var(--bad);color:#fff}
+.chip.remote{color:var(--acc);border:1px dashed var(--acc);background:none}
+.lockbtn{border:none;background:#1d2430;border-radius:20px;padding:4px 11px;
+ font-size:12px;color:var(--dim);cursor:pointer}
+.lockbtn.mine{background:#233324;color:var(--ok)}
+.lockbtn.other{background:#2c2338;color:var(--lock);cursor:default}
+.lockbtn.stale{background:#3a2a12;color:var(--warn)}
+.mini{border:1px solid var(--line);background:none;border-radius:20px;
+ padding:4px 10px;font-size:12px;color:var(--dim);cursor:pointer;white-space:nowrap}
+.mini:hover{color:var(--tx);border-color:var(--dim)}
+.mini.danger:hover{color:var(--bad);border-color:var(--bad)}
+/* --- коміт-бар --- */
+#commitbar{display:flex;gap:10px;padding:12px 14px;border-top:1px solid var(--line);
+ background:var(--panel)}
+#c-msg{flex:1;background:#0c0e12;border:1px solid var(--line);border-radius:9px;
+ color:var(--tx);padding:11px 13px;font-size:14px}
+/* --- кнопки --- */
+button.primary{background:var(--acc);color:#fff;border:none;border-radius:9px;
+ padding:10px 16px;font-size:14px;font-weight:600;cursor:pointer}
+button.primary:hover{filter:brightness(1.1)}
+button.primary.big{width:100%;padding:13px;font-size:15px}
+button.ghost{background:none;border:1px solid var(--line);color:var(--dim);
+ border-radius:9px;padding:8px 13px;font-size:13px;cursor:pointer}
+button.ghost:hover{color:var(--tx)}
+.empty{flex:1;display:flex;align-items:center;justify-content:center;color:var(--dim)}
+/* --- журнал --- */
+/* --- історія проєкту: коміти ліворуч, вміст коміту праворуч --- */
+#log{flex:1;overflow-y:auto}
+.le{padding:11px 14px;border-bottom:1px solid var(--line);font-size:13.5px;
+ cursor:pointer}
+.le:hover{background:#151a23}
+.le.on{background:#1d2430}
+.le .m{font-weight:600;white-space:nowrap;overflow:hidden;
+ text-overflow:ellipsis}
+.le .meta{color:var(--dim);font-size:12px;margin-top:3px}
+.hist-right{width:430px;min-width:430px;border-left:1px solid var(--line);
+ display:flex;flex-direction:column;overflow:hidden}
+.hist-side{flex:1;background:#12151c;overflow-y:auto;display:flex;
+ flex-direction:column}
+.ch-bar{display:flex;align-items:center;gap:10px;padding:9px 12px;
+ border-top:1px solid var(--line);background:var(--panel)}
+.ch-all-l{display:flex;align-items:center;gap:6px;font-size:12.5px;
+ color:var(--dim);cursor:pointer}
+.ch-count-t{flex:1;font-size:12.5px;color:var(--dim)}
+.ch-cb{width:15px;height:15px;accent-color:var(--acc);flex:none}
+.ch-cb-gap{width:15px;min-width:15px}
+.ch-head{padding:16px 16px 13px;border-bottom:1px solid var(--line)}
+.ch-msg{font-size:14.5px;font-weight:600;white-space:pre-wrap;
+ word-break:break-word}
+.ch-who{color:var(--dim);font-size:12px;margin-top:6px}
+.ch-count{padding:10px 16px;color:var(--dim);font-size:12px;
+ border-bottom:1px solid var(--line)}
+.ch-files{padding:6px 8px}
+.ch-f{display:flex;align-items:center;gap:9px;padding:5px 8px;
+ border-radius:6px;font-size:13px}
+.ch-f:hover{background:#171d27}
+.ch-mark{width:15px;min-width:15px;text-align:center;font-size:12px;
+ font-weight:700;color:var(--dim)}
+.ch-mark.A{color:var(--ok)}.ch-mark.M{color:var(--warn)}
+.ch-mark.D{color:var(--bad)}.ch-mark.R{color:var(--acc)}
+.ch-p{flex:1;display:flex;min-width:0;white-space:nowrap}
+.ch-dir{color:var(--dim);overflow:hidden;text-overflow:ellipsis;min-width:0}
+.ch-name{flex:none}
+.ch-more{padding:10px 8px;color:var(--dim);font-size:12px}
+/* --- тости й зайнятість --- */
+#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);
+ background:#1d2430;border:1px solid var(--line);border-radius:10px;
+ padding:11px 20px;font-size:14px;max-width:70%;white-space:pre-wrap}
+#busy{position:fixed;inset:0;background:#0f1115cc;display:flex;flex-direction:column;
+ gap:14px;align-items:center;justify-content:center;font-size:15px}
+.spin{width:34px;height:34px;border:3px solid var(--line);border-top-color:var(--acc);
+ border-radius:50%;animation:r 0.8s linear infinite}
+@keyframes r{to{transform:rotate(360deg)}}
+
+/* --- сервер переїхав --- */
+.moved{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.moved-url{font-family:Consolas,monospace;font-size:12.5px;color:var(--tx);
+ background:#0c0e12;border:1px solid var(--line);border-radius:6px;
+ padding:4px 9px;word-break:break-all}
+
+/* --- зміна адреси сервера --- */
+.srv{display:block}
+.srv-row{display:flex;align-items:center;gap:9px}
+.srv-row input{flex:1;background:#0c0e12;border:1px solid var(--line);
+ border-radius:7px;color:var(--tx);padding:6px 10px;font-size:12.5px;
+ font-family:Consolas,monospace}
+.srv-hint{margin-top:7px;font-size:12px;opacity:.85}
+
+/* --- провідник проєкту --- */
+.crumbs{display:flex;align-items:center;gap:6px;padding:10px 16px;
+ border-bottom:1px solid var(--line);background:var(--panel);font-size:13px}
+.crumbs .dim{margin-top:0}
+.crumb{background:none;border:none;color:var(--acc);cursor:pointer;
+ font-size:13px;padding:2px 4px;border-radius:5px;font-family:inherit}
+.crumb:hover{background:#1d2430}
+.crumb.last{color:var(--tx);cursor:default}
+.crumb.last:hover{background:none}
+.crumb-sep{color:var(--dim)}
+.br-split{flex:1;display:flex;overflow:hidden}
+#br-list{flex:1;overflow-y:auto;padding:6px 10px}
+.br-side{width:270px;border-left:1px solid var(--line);background:var(--panel);
+ padding:14px;overflow-y:auto;display:flex;flex-direction:column;gap:9px}
+.br-empty{color:var(--dim);font-size:12.5px;margin:auto;text-align:center}
+.br-thumb{width:100%;border-radius:8px;border:1px solid var(--line);
+ background:#0c0e12;image-rendering:auto}
+.br-name{font-size:13.5px;font-weight:600;word-break:break-all}
+.br-fact{font-size:12px;color:var(--dim);display:flex;justify-content:space-between;gap:8px}
+.br-fact b{color:var(--tx);font-weight:500;text-align:right}
+.br-side .mini{width:100%;justify-content:center}
+.e{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:8px;
+ cursor:default}
+.e:hover{background:#151a23}
+.e.on{background:#1d2430}
+.e .ico{width:18px;text-align:center;font-size:14px}
+.e .nm{flex:1;font-size:13.5px;white-space:nowrap;overflow:hidden;
+ text-overflow:ellipsis}
+.e.dir .nm{font-weight:600;cursor:pointer}
+.e.dir .nm:hover{color:var(--acc)}
+.e .sz{font-size:11.5px;color:var(--dim);min-width:64px;text-align:right}
+.e .dt{font-size:11.5px;color:var(--dim);min-width:106px;text-align:right}
+.e.ghost-row{opacity:.55}
+
+/* --- дерево тек збоку --- */
+.br-tree{width:236px;min-width:236px;border-right:1px solid var(--line);
+ background:#12151c;overflow:auto;padding:8px 6px}
+.tn{display:flex;align-items:center;gap:4px;padding:4px 6px;border-radius:7px;
+ white-space:nowrap;cursor:pointer;font-size:13px}
+.tn:hover{background:#1b2029}
+.tn.on{background:#1d2430;color:var(--tx)}
+.tn .tw{width:14px;text-align:center;color:var(--dim);font-size:10px;
+ flex:0 0 14px}
+.tn .tw.empty{visibility:hidden}
+.tn .ti{flex:0 0 auto}
+.tn .tl{overflow:hidden;text-overflow:ellipsis}
+.tn .dot{width:6px;height:6px;border-radius:50%;background:var(--acc);
+ flex:0 0 6px;margin-left:4px}
+
+/* --- власне вікно запитання ---
+   Системне confirm() показує «127.0.0.1:16827 says» із випадковим портом
+   щоразу — виглядає як збій, а не як програма. Тому своє. */
+#modal{position:fixed;inset:0;background:#0b0d1199;display:flex;
+ align-items:center;justify-content:center;z-index:50;padding:24px}
+.mbox{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+ padding:24px 26px;width:520px;max-width:100%;max-height:82vh;overflow:auto;
+ box-shadow:0 18px 50px #0009}
+.mbox.danger{border-color:#5a2630}
+.mtitle{font-size:16px;font-weight:600;margin-bottom:12px;line-height:1.35}
+.mtext{font-size:13.5px;color:var(--dim);line-height:1.6}
+.mtext .p{margin-bottom:9px}
+.mtext .p:last-child{margin-bottom:0}
+.mtext .warn-line{color:var(--warn)}
+.mtext .bad-line{color:var(--bad)}
+.mtext .facts{margin:10px 0;padding:10px 12px;background:#0c0e12;
+ border:1px solid var(--line);border-radius:9px}
+.mtext .facts .r{display:flex;justify-content:space-between;gap:12px;
+ padding:2px 0;font-size:12.5px}
+.mtext .facts .r b{color:var(--tx);font-weight:500}
+.mchk{display:flex;align-items:center;gap:9px;margin-top:16px;font-size:12.5px;
+ color:var(--dim);cursor:pointer;user-select:none}
+.mchk input{width:16px;height:16px;accent-color:var(--acc);cursor:pointer}
+.mbtns{display:flex;gap:9px;margin-top:20px;justify-content:flex-end;
+ flex-wrap:wrap}
+.mbtns button{white-space:nowrap}
+button.primary.bad{background:var(--bad)}
+
+/* --- «лишити мої локи» у рядку здачі --- */
+.keep{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--dim);
+ cursor:pointer;user-select:none;white-space:nowrap}
+.keep input{width:15px;height:15px;accent-color:var(--acc);cursor:pointer}
+.keep:hover{color:var(--tx)}
+
+/* --- розділи списку файлів --- */
+.grp{display:flex;align-items:center;gap:9px;padding:14px 12px 6px;
+ cursor:pointer;user-select:none}
+.grp .gtw{color:var(--dim);font-size:10px;width:12px;flex:0 0 12px}
+.grp .gt{font-size:12px;font-weight:600;letter-spacing:.05em;
+ text-transform:uppercase;color:var(--dim)}
+.grp .gn{font-size:11.5px;color:var(--dim);background:#1d2430;
+ border-radius:20px;padding:1px 8px}
+.grp .gh{font-size:12px;color:#5f6879;overflow:hidden;text-overflow:ellipsis;
+ white-space:nowrap}
+.grp:hover .gt,.grp:hover .gtw{color:var(--tx)}
+
+/* «Get latest», коли справді є що забрати */
+button.primary.has-work{box-shadow:0 0 0 2px #f5a52455}
+
+/* --- іконки типів файлів (беруться з Windows) --- */
+.f .fico{width:18px;min-width:18px;text-align:center;font-size:13px}
+.f .fico.img{height:18px;object-fit:contain}
+.f.child .fico{width:16px;min-width:16px;height:16px}
+.e .ico.img{height:20px;width:20px;object-fit:contain}
+.e .ico{width:20px;min-width:20px}
+
+/* --- конфлікт у шапці: його не можна проґавити --- */
+.conflict-badge{font-size:12.5px;color:#fff;background:var(--bad);
+ border-radius:20px;padding:3px 11px;font-weight:600;white-space:nowrap}
+
+/* --- меню рідкісних дій ---------------------------------------------------
+   Розкривається ВГОРУ: сидить унизу бічної панелі, вниз йому нікуди. z-index
+   нижчий за модалку (50), бо «Repair» одразу після себе відкриває питання, і
+   меню не має лежати поверх нього. */
+.menu-wrap{position:relative}
+.menu{position:absolute;bottom:calc(100% + 6px);left:0;right:0;z-index:20;
+ background:#161b24;border:1px solid var(--line);border-radius:10px;
+ padding:6px;box-shadow:0 12px 32px #0009;display:flex;
+ flex-direction:column;gap:2px}
+.menu-head{font-size:11px;color:var(--dim);padding:5px 9px 7px;
+ white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.menu-item{background:none;border:none;color:var(--tx);text-align:left;
+ padding:9px 10px;border-radius:7px;font-size:13.5px;cursor:pointer;
+ white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.menu-item:hover{background:#1d2430}
+.menu-item.bad{color:var(--bad)}
+.menu-item.bad:hover{background:#2a151a}
+.menu-sep{height:1px;background:var(--line);margin:5px 4px}
+button.ghost.wide.on{color:var(--tx);border-color:#3a4152}

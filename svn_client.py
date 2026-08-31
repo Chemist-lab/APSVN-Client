@@ -543,9 +543,19 @@ def _run(args, cwd=None, username=None, password=None, timeout=120,
     вводу-виводу процесу.
     """
     if not os.path.isfile(SVN):
-        raise SvnError("svn.exe is missing. It looks like APSVN was copied "
-                       "only partly — you need the whole folder, including "
-                       "the svn subfolder.")
+        # Текст різний, бо причини різні. На Windows svn їде в комплекті, тож
+        # його відсутність означає рівно одне: теку скопіювали не всю. На маку
+        # збірка поки що позичає системний svn, а macOS свого не має з часів
+        # Xcode 11 — тобто найімовірніше його просто ніде взяти. Порада «візьми
+        # теку цілком» там не веде нікуди, а «svn.exe» на маку не існує взагалі.
+        raise SvnError(
+            "svn.exe is missing. It looks like APSVN was copied "
+            "only partly — you need the whole folder, including "
+            "the svn subfolder."
+            if desktop.WINDOWS else
+            "Subversion is missing. APSVN needs the “svn” command line tool, "
+            "and macOS does not ship one. Install it with:\n\n"
+            "    brew install subversion")
     cmd = [SVN] + list(args)
     if _config_dir:
         cmd += ["--config-dir", _config_dir]

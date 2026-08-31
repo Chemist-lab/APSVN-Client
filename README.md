@@ -253,6 +253,7 @@ generic.)
 | `svn_client.py` | wrapper around `svn.exe` |
 | `ui/`           | the interface (HTML/CSS/JS) |
 | `runtime/`      | Python 3.14 embeddable — so nothing has to be installed |
+| `runtime-mac/`  | the same idea on macOS: a portable python.org framework, built by `make_runtime_mac.sh` |
 | `vendor/`       | pywebview, keyring and their dependencies |
 | `svn/`          | SlikSvn (Subversion CLI, Apache-2.0) |
 | `explorer.py`   | the Explorer: one folder at a time |
@@ -520,47 +521,63 @@ fooled by it — but on Apple Silicon an unsigned binary does not warn, it
 simply refuses to start, so the build would be dead without it.
 
 ```bash
+./make_runtime_mac.sh   # once — builds the portable Python into runtime-mac/
 ./package_mac.sh
 ```
 
-It has now been run — on macOS 27 (Apple Silicon), Python 3.14, svn 1.14.5 from
+It has been run — on macOS 27 (Apple Silicon), Python 3.14, svn 1.14.5 from
 Homebrew. The window comes up, the WKWebView bridge works, icons come from the
-system, and the packaged `.app` starts from a fresh unpack. What the first real
-run cost is written up in the git history; the short version is that nothing was
-wrong with the *logic*, and everything that broke broke at the seams between the
-code and the system.
+system, and the packaged `.app` starts from a fresh unpack on a machine that has
+no Python of its own. Nothing was wrong with the *logic*; everything that broke
+broke at the seam between the code and the system, and the git history has each
+one.
 
-Two of those are worth knowing before touching the build again:
+#### The Python inside the bundle
 
-* **the launcher must ask, not assume.** Finder gives an app a minimal `PATH`,
-  so `python3` there is Apple's 3.9 — while `vendor/` holds a PyObjC compiled
-  for 3.14, which 3.9 cannot load. A double-click died on the import while
-  `python3 app.py` in a terminal kept working. The launcher now tries each
-  candidate with `import webview, objc, keyring` and takes the first that
-  answers;
-* **nothing may be written inside the bundle after signing.** The first launch
-  put 174 `.pyc` files into it and broke the signature seal. Bytecode is
-  compiled during the build, before `codesign`.
+`runtime-mac/` is the macOS twin of `runtime/` on Windows, and like it, it is
+built rather than committed. `make_runtime_mac.sh` copies the **python.org**
+framework — deliberately not Homebrew's, which reaches into `/opt/homebrew` for
+its OpenSSL and would drag half of Homebrew along — trims it (CPython's own test
+suite alone is 116 MB, and the interface is a WKWebView, so Tk goes too),
+rewrites every absolute `install_name` to `@loader_path`/`@executable_path`, and
+signs what it changed. 118 MB unpacked, 39 MB zipped, against 43 MB and 20 MB on
+Windows.
+
+Three things about it are load-bearing, and all three were paid for:
+
+* **the interpreter lives in `Contents/MacOS`, and that is what gives the app
+  its own name.** Borrowing the system Python meant `exec` into a binary inside
+  *its* `Python.app`, so LaunchServices credited that bundle: the Dock said
+  “Python”, with Python's icon. Nothing else was needed to fix it — the same
+  binary, moved inside our own `Contents/MacOS`, registers as
+  `cloud.altpicture.apsvn`;
+* **`PYTHONHOME` is set explicitly.** The stub comes from `Python.app` inside
+  the framework and now sits somewhere else entirely, so the landmarks CPython
+  uses to find its own standard library are no longer where it looks. Guessing
+  here is pointless when the answer can simply be stated;
+* **the standard library's bytecode is hash-based `unchecked`** (PEP 552). Plain
+  `.pyc` are validated by timestamp, and `cp -R` rewrites the `.py` timestamps —
+  so the moment the framework is copied, the whole library counts as stale.
+  Then one of two bad things: Python rewrites the `.pyc` *inside a signed
+  bundle* and breaks the seal on the artist's machine, or, with
+  `PYTHONDONTWRITEBYTECODE`, recompiles it on every launch. `unchecked-hash` is
+  checked against neither, so copying cannot disturb it. Verified: the signature
+  survives a run made deliberately without `PYTHONDONTWRITEBYTECODE`.
+
+If `runtime-mac/` is absent the build still works — the launcher falls back to
+hunting for a system Python and asks each candidate `import webview, objc,
+keyring`, because a version number guesses at what an import answers. That
+fallback is what the artist must never reach.
 
 Tests: 445 of the 450 run here. The other five are not skipped for convenience
 and nothing is missing — two exercise the Windows icon backend, and three need
 Unreal Engine actually installed to have anything to look at.
 
-Not yet solved, in the order they will bite:
-
-* **the artist still has to have Python 3.14.** This is the one that breaks the
-  promise on the box: on Windows `runtime/` ships inside the folder and nothing
-  is installed, while the `.app` borrows the system Python and merely says so
-  politely when there is none. The fix is the macOS twin of `runtime/` — a
-  framework Python inside `Contents/Frameworks`;
-* **the Dock says “Python”.** A framework Python re-execs through its own
-  `Python.app`, so LaunchServices credits that bundle and not ours — the icon
-  and the name in the Dock are Python's. Bundling the runtime above fixes this
-  too, which is why it is one job and not two;
-* **svn from Homebrew is not relocatable** as it stands (it links against
-  `/opt/homebrew/lib/*.dylib`), so the bundle falls back to the system `svn` and
-  says so during the build. Making it portable means `install_name_tool` and
-  rpath work — a job of its own.
+Still not solved: **svn from Homebrew is not relocatable** as it stands (it links
+against `/opt/homebrew/lib/*.dylib`), so the bundle falls back to the system
+`svn` and says so during the build. It is the same `install_name_tool` and rpath
+work `make_runtime_mac.sh` already does for Python, on a smaller target — the
+script is the worked example to copy from.
 
 ### Tests
 

@@ -154,7 +154,21 @@ def stage(zip_path, into):
             if not p.startswith(os.path.normpath(into) + os.sep) \
                     and p != os.path.normpath(into):
                 raise IOError("archive tries to write outside: %s" % name)
-        z.extractall(into)
+        if not desktop.MAC:
+            z.extractall(into)
+
+    if desktop.MAC:
+        # ditto, а не zipfile: на маку збірка — це .app, а він не просто тека.
+        # Перевірено на нашому ж архіві, всі три речі одразу: zipfile знімає
+        # біт виконуваності (запускач перестає бути запускачем), перетворює
+        # символьні посилання всередині Python.framework на копії й ламає
+        # підпис — а без підпису на Apple Silicon не стартує взагалі. Тим
+        # самим ditto архів і створюється, див. package_mac.sh.
+        r = subprocess.run(["ditto", "-x", "-k", zip_path, into],
+                           capture_output=True, **desktop.no_window())
+        if r.returncode != 0:
+            raise IOError("could not unpack the archive: %s"
+                          % r.stderr.decode("utf-8", "replace").strip()[:200])
 
     root = _find_root(into)
     if root is None:
@@ -162,12 +176,28 @@ def stage(zip_path, into):
     return root
 
 
+def _markers(d):
+    return all(os.path.exists(os.path.join(d, m.replace("/", os.sep)))
+               for m in MUST_HAVE)
+
+
 def _find_root(top):
-    """Тека, у якій лежать наші файли — сама top або один рівень нижче."""
-    for cand in [top] + [os.path.join(top, d) for d in _dirs(top)]:
-        if all(os.path.exists(os.path.join(cand, m.replace("/", os.sep)))
-               for m in MUST_HAVE):
+    """Тека, у якій лежать наші файли — сама top або один рівень нижче.
+
+    На маку є ще один випадок, і без нього оновлення не працює зовсім: там
+    збірка — це APSVN.app, і наших файлів у його корені немає, вони лежать у
+    Contents/Resources. Тому коренем вважається сам .app: підмінити треба
+    bundle цілком, разом зі своїм Python, svn і підписом.
+    """
+    cands = [top] + [os.path.join(top, d) for d in _dirs(top)]
+    for cand in cands:
+        if _markers(cand):
             return cand
+    if desktop.MAC:
+        for cand in cands:
+            if cand.endswith(".app") and \
+                    _markers(os.path.join(cand, "Contents", "Resources")):
+                return cand
     return None
 
 

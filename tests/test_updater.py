@@ -153,6 +153,26 @@ if desktop.WINDOWS:
     relaunch = os.path.join(ROOT, "relaunch.bat")
     io.open(relaunch, "w", newline="\r\n").write(
         "@echo off\r\necho yes> \"%s\"\r\n" % done)
+elif desktop.MAC:
+    # На маку в сценарії підміни стоїть `open`, і це правильно: там relaunch —
+    # то APSVN.app. Але `open` не ВИКОНУЄ файл, він відкриває його тим, чим
+    # система вважає за потрібне, тож звичайний .sh просто поїхав би в
+    # редактор. Підробка мусить бути справжнім bundle, інакше перевірка міряє
+    # не те, що станеться в художника.
+    relaunch = os.path.join(ROOT, "Relaunch.app")
+    os.makedirs(os.path.join(relaunch, "Contents", "MacOS"))
+    io.open(os.path.join(relaunch, "Contents", "Info.plist"), "w").write(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<plist version="1.0"><dict>'
+        '<key>CFBundleName</key><string>Relaunch</string>'
+        '<key>CFBundleIdentifier</key><string>cloud.altpicture.relaunchtest</string>'
+        '<key>CFBundleExecutable</key><string>Relaunch</string>'
+        '<key>CFBundlePackageType</key><string>APPL</string>'
+        '</dict></plist>\n')
+    exe = os.path.join(relaunch, "Contents", "MacOS", "Relaunch")
+    io.open(exe, "w", newline="\n").write(
+        "#!/bin/bash\necho yes > '%s'\n" % done)
+    os.chmod(exe, 0o755)
 else:
     relaunch = os.path.join(ROOT, "relaunch.sh")
     io.open(relaunch, "w", newline="\n").write(
@@ -206,8 +226,22 @@ check("немає зв'язку -> стан offline, а не виняток",
 check("і посилання на сторінку релізів усе одно є", r.get("url"), r)
 up.API = saved
 
+# python.org збирає Python із власним OpenSSL, і той іде БЕЗ кореневих
+# сертифікатів, доки не запустять «Install Certificates.command». Тоді жоден
+# https із Python не працює, і ця перевірка міряла б стан машини, а не код. У
+# самій збірці питання не стоїть: корені їдуть у комплекті (svn/cert.pem), і
+# svn_client показує на них через SSL_CERT_FILE — перевірено, Python їх бачить.
+import ssl as _ssl
+try:
+    _roots = len(_ssl.create_default_context().get_ca_certs())
+except Exception:
+    _roots = 0
 r = up.check("1.0.0")
-check("живий сервер відповідає", r["state"] in ("ok", "none"), r)
+if _roots or r["state"] in ("ok", "none"):
+    check("живий сервер відповідає", r["state"] in ("ok", "none"), r)
+else:
+    check("живий сервер відповідає (цей Python без коренів — нічим перевіряти)",
+          r["state"] == "offline", r)
 check("«релізів ще немає» — це стан none, а не поламка",
       r["state"] != "error", r)
 

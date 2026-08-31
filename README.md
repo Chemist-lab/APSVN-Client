@@ -535,6 +535,21 @@ behind decisions that look odd until you know why.
   outside the staging folder. The last one is zip-slip — cheap to check, and
   the cost of missing it is not “no update” but “something overwritten
   elsewhere”.
+* **On macOS the thing being replaced is the `.app`, and it is unpacked with
+  `ditto`.** Three separate reasons, each of which alone left the update dead
+  there. `zipfile` cannot carry a bundle: measured on our own archive, it drops
+  the executable bit so the launcher stops being a launcher, turns the symlinks
+  inside `Python.framework` into copies, and breaks the signature — and an
+  unsigned bundle does not start on Apple Silicon at all. The root of the
+  archive is `APSVN.app`, whose own root holds none of the marker files, since
+  the code lives in `Contents/Resources` — so the search for it came up empty
+  and staging refused the build outright. And what has to be swapped is the
+  whole bundle, not the folder the code runs from: its own Python and its own
+  svn sit beside the code, so replacing `Contents/Resources` alone would leave
+  new code on an old runtime under a broken seal. `desktop.app_bundle()` finds
+  the bundle; outside one it answers `None`, which is the ordinary state when
+  running from source. Verified by actually updating a real `.app`: the old
+  build is gone, the signature is intact, and the program relaunches itself.
 * **Deleted files stopped being a tab.** It sat in the sidebar at the same
   weight as the things people use daily, next to a History that had just
   learned to bring files back from any commit — so it read as a duplicate of

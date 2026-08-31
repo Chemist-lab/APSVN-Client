@@ -349,7 +349,12 @@ class Api:
             self.busy.clear()
             self._prog = None
 
-        install = APP_DIR
+        # На маку підміняється .app цілком: код у ньому лише частина, поруч
+        # лежать свій Python і свій svn, а зверху підпис. Раніше тут стояв
+        # APP_DIR — тобто Contents/Resources, — і оновлення підмінило б саму
+        # теку з кодом усередині старого bundle. Заразом це робить правильним
+        # і `open` у сценарії підміни: відкрити можна .app, а не теку.
+        install = desktop.app_bundle(APP_DIR) or APP_DIR
         relaunch = os.path.join(install, "APSVN.bat") if desktop.WINDOWS \
             else install
         script = up.write_swap_script(work, staged, install, os.getpid(),

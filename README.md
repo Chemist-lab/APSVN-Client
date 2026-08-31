@@ -527,12 +527,20 @@ simply refuses to start, so the build would be dead without it.
 ./package_mac.sh
 ```
 
-It has been run — on macOS 27 (Apple Silicon), Python 3.14, svn 1.14.5 from
-Homebrew. The window comes up, the WKWebView bridge works, icons come from the
-system, and the packaged `.app` starts from a fresh unpack on a machine that has
-no Python and no svn of its own — the artist installs nothing, exactly as on
-Windows. Nothing was wrong with the *logic*; everything that broke broke at the
-seam between the code and the system, and the git history has each one.
+It has been run — built on macOS 27 (Apple Silicon) against Python 3.14 and svn
+1.14.5 from Homebrew. The window comes up, the WKWebView bridge works, and icons
+come from the system.
+
+The part that actually matters was checked somewhere else, because a build
+machine cannot prove it: the zip was opened on **a second Mac with neither
+`python3` nor `svn` installed** — not even Apple's 3.9 stub, so the Command Line
+Tools were absent too — and the app started. There was nothing there to fall back
+on: had the framework not relocated, the launcher would have found no candidate
+and said so in a dialog instead. So the `.app` carries its own Python, and the
+artist installs nothing, exactly as on Windows.
+
+Nothing was wrong with the *logic*; everything that broke broke at the seam
+between the code and the system, and the git history has each one.
 
 #### The Python inside the bundle
 

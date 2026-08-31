@@ -46,7 +46,10 @@ class Scene:
         os.makedirs(self.base)
         repo = os.path.join(self.base, "repo")
         subprocess.run([ADMIN, "create", repo], check=True, capture_output=True)
-        self.url = "file:///" + repo.replace(os.sep, "/")
+        # .lstrip: на POSIX шлях уже починається з "/", і без цього вийшло б
+        # file:////… — svn таке ковтає при checkout, але svn info віддає канонічні три
+        # слеші, і порівняння URL у probe() каже «тут інший проєкт».
+        self.url = "file:///" + repo.replace(os.sep, "/").lstrip("/")
         self.A = os.path.join(self.base, "A")
         self.B = os.path.join(self.base, "B")
         sc.checkout(self.url, self.A)

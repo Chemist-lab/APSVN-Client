@@ -57,7 +57,10 @@ svnadmin = sc.SVNADMIN
 def make_repo(tag):
     r = os.path.join(base, "repo_" + tag)
     subprocess.run([svnadmin, "create", r], check=True, capture_output=True)
-    return "file:///" + r.replace("\\", "/")
+    # .lstrip: на POSIX шлях уже починається з "/", і без цього вийшло б
+    # file:////… — svn таке ковтає при checkout, але svn info віддає канонічні три
+    # слеші, і порівняння URL у probe() каже «тут інший проєкт».
+    return "file:///" + r.replace("\\", "/").lstrip("/")
 
 
 URL_A, URL_B = make_repo("a"), make_repo("b")

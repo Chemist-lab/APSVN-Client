@@ -42,16 +42,21 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 # --- код --------------------------------------------------------------------
-for f in app.py svn_client.py explorer.py desktop.py shellicon.py \
-         shellicon_mac.py blendthumb.py imgthumb.py; do
-  cp "$SRC/$f" "$APP/Contents/Resources/"
+# Беремо ВСІ модулі з кореня, а не перелік. Перелік уже підводив: у main
+# зʼявився updater.py, app.py його імпортує — а в списку його, звісно, немає,
+# тож .app зібрався б без нього й помер би на старті з «could not start».
+# Помилка того самого роду, що й решта в цій збірці: те, що на машині розробника
+# лежить поруч, у bundle не потрапляє, і видно це аж у художника.
+for f in "$SRC"/*.py; do
+  case "$(basename "$f")" in
+    # *_win.py на маку не імпортується ніколи, а тягнути в збірку код для
+    # чужої системи означає лише збивати з пантелику того, хто полізе всередину.
+    *_win.py) continue ;;
+  esac
+  cp "$f" "$APP/Contents/Resources/"
 done
 cp -R "$SRC/ui" "$APP/Contents/Resources/"
 [ -d "$SRC/vendor" ] && cp -R "$SRC/vendor" "$APP/Contents/Resources/"
-
-# shellicon_win.py не кладемо: на маку він не імпортується ніколи, а тягнути
-# в збірку код для чужої системи означає лише збивати з пантелику того, хто
-# полізе всередину.
 
 # --- svn ---------------------------------------------------------------------
 # Свій svn у комплекті кращий за системний: чужий може бути старим або

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Іконки типів файлів із Windows.
+"""Іконки типів файлів із системи.
 
 Найдорожча помилка тут була не в логіці, а в ctypes: без явних прототипів
 хендл вікна/бітмапи пхався в C int, і виклик падав з OverflowError рівно
@@ -13,8 +13,14 @@ import os
 import struct
 import sys
 
-sys.path.insert(0, os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+# vendor теж, і це не дрібниця: на маку іконки йдуть через PyObjC, який лежить
+# саме там. Без цього рядка shellicon чесно віддає None на ВСЕ, і всі перевірки
+# нижче провалюються з виглядом «система не знає жодного розширення» — тобто
+# показують несправність там, де її немає. На Windows рядок нічого не міняє:
+# shellicon_win обходиться самим ctypes зі стандартної бібліотеки.
+sys.path.insert(0, os.path.join(ROOT, "vendor"))
 import shellicon as si
 
 OK, FAIL = [], []

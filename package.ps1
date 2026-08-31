@@ -27,7 +27,8 @@ $zip = Join-Path (Split-Path $src -Parent) "$name.zip"
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
 $rc = @($src, $dest, "/E",
         "/XD", "tests", "__pycache__",
-        "/XF", "*.pyc", "package.ps1", "*.apsvn-part",
+        # Збіркове знаряддя не їде до художника — ні наше, ні маківське.
+        "/XF", "*.pyc", "package.ps1", "*.sh", "*.apsvn-part",
         "/NFL", "/NDL", "/NJH", "/NJS", "/NP")
 & robocopy @rc | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed: $LASTEXITCODE" }

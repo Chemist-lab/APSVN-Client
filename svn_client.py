@@ -14,7 +14,8 @@
   видно у диспетчері задач.
 * Приватний --config-dir: auto-props вішає svn:needs-lock на бінарники (без
   цього локи декоративні), global-ignores ховає .blend1 та інший мотлох.
-* CREATE_NO_WINDOW: під pythonw кожен виклик інакше блимає консоллю.
+* вікно консолі глушиться через desktop.no_window(): під pythonw кожен
+  виклик інакше блимає чорним прямокутником.
 * Коди помилок перекладаються людською мовою.
 * Застрягла робоча копія (E155004) лікується автоматичним cleanup і повтором.
 """
@@ -30,15 +31,10 @@ import time
 import urllib.parse
 import xml.etree.ElementTree as ET
 
+import desktop
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_CANDIDATES = [
-    # свій svn у комплекті — художник нічого не встановлює
-    os.path.join(_HERE, "svn", "svn.exe"),
-    r"C:\Program Files\SlikSvn\bin\svn.exe",
-    r"C:\Program Files (x86)\SlikSvn\bin\svn.exe",
-    r"C:\Program Files\TortoiseSVN\bin\svn.exe",
-    r"C:\Program Files\Subversion\bin\svn.exe",
-]
+_CANDIDATES = desktop.svn_candidates(_HERE)
 
 
 def _find_svn():
@@ -50,7 +46,6 @@ def _find_svn():
 
 
 SVN = _find_svn()
-_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
 # файли, які ніколи не потрапляють ані в список, ані в коміт
 JUNK_RE = re.compile(
@@ -119,6 +114,13 @@ class SvnError(Exception):
 
 # --- кодування -------------------------------------------------------------
 def _acp():
+    """Кодова сторінка, у якій svn.exe читає argv.
+
+    Поза Windows питання не стоїть узагалі: argv там у UTF-8, і вся драбина
+    кодувань нижче вироджується в перший же крок.
+    """
+    if not desktop.WINDOWS:
+        return "utf-8"
     try:
         return "cp%d" % ctypes.windll.kernel32.GetACP()
     except Exception:
@@ -138,7 +140,14 @@ def _dec(b):
 
 
 def _short(path):
-    """8.3-псевдонім — ASCII-шлях там, де оригінал кириличний."""
+    """8.3-псевдонім — ASCII-шлях там, де оригінал кириличний.
+
+    Суто віконна річ: 8.3-імена існують лише на файлових системах Microsoft, і
+    потрібні лише тому, що svn.exe не юнікодний. Деінде повертаємо None, і
+    виклик іде далі звичайним шляхом.
+    """
+    if not desktop.WINDOWS:
+        return None
     try:
         buf = ctypes.create_unicode_buffer(1024)
         n = ctypes.windll.kernel32.GetShortPathNameW(str(path), buf, 1024)
@@ -275,7 +284,7 @@ def supports_stdin_password():
     if _stdin_pw is None:
         try:
             r = subprocess.run([SVN, "help", "status"], capture_output=True,
-                               creationflags=_NO_WINDOW,
+                               **desktop.no_window(),
                                stdin=subprocess.DEVNULL, timeout=30)
             _stdin_pw = "--password-from-stdin" in _dec(r.stdout)
         except Exception:
@@ -378,6 +387,10 @@ def _io_read(handle):
     ПОХІДНА цієї величини — справжня, виміряна швидкість роботи, і саме її
     варто показати замість тиші.
     """
+    if not desktop.WINDOWS:
+        # На маку прямого аналога немає (psutil там io_counters не вміє), тож
+        # виміряної швидкості просто не буде — лишиться оцінка за історією.
+        return None
     try:
         c = _IO_COUNTERS()
         if ctypes.windll.kernel32.GetProcessIoCounters(int(handle),
@@ -405,7 +418,7 @@ def _stream_lines(cmd, cwd, stdin_data, on_line, on_io=None):
     p = subprocess.Popen(
         cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         stdin=subprocess.PIPE if stdin_data else subprocess.DEVNULL,
-        creationflags=_NO_WINDOW, bufsize=0)
+        **desktop.no_window(), bufsize=0)
     if stdin_data:
         try:
             p.stdin.write(stdin_data)
@@ -489,7 +502,7 @@ def _stream(cmd, cwd, stdin_data, dest):
             p = subprocess.Popen(
                 cmd, cwd=cwd, stdout=fh, stderr=subprocess.PIPE,
                 stdin=subprocess.PIPE if stdin_data else subprocess.DEVNULL,
-                creationflags=_NO_WINDOW)
+                **desktop.no_window())
             _, err = p.communicate(input=stdin_data)
         return p.returncode, b"", err
     except OSError as e:
@@ -551,7 +564,7 @@ def _run(args, cwd=None, username=None, password=None, timeout=120,
                                          notifier.line, notifier.io)
         else:
             kw = dict(cwd=cwd, capture_output=True, timeout=timeout,
-                      creationflags=_NO_WINDOW)
+                      **desktop.no_window())
             if stdin_data is None:
                 kw["stdin"] = subprocess.DEVNULL
             else:

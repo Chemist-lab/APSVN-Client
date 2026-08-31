@@ -43,7 +43,11 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, APP_DIR)
 sys.path.insert(0, os.path.join(APP_DIR, "vendor"))
 
-CONF_DIR = os.path.join(os.environ.get("APPDATA", "."), "APSVN")
+# Єдиний модуль, який знає, під якою системою ми працюємо. Імпортується ДО
+# всього іншого, бо CONF_DIR нижче вже питає в нього шлях.
+import desktop  # noqa: E402
+
+CONF_DIR = desktop.conf_dir("APSVN")
 CONF = os.path.join(CONF_DIR, "config.json")
 LOG = os.path.join(CONF_DIR, "error.log")
 RESCUE = os.path.join(CONF_DIR, "rescue")
@@ -63,12 +67,8 @@ def fatal(title, text, exc=None):
             fh.write("\n=== %s ===\n%s\n" % (title, exc or text))
     except Exception:
         pass
-    try:
-        import ctypes
-        ctypes.windll.user32.MessageBoxW(
-            0, "%s\n\nDetails: %s" % (text, LOG), "APSVN — " + title, 0x10)
-    except Exception:
-        print(title, text, file=sys.stderr)
+    desktop.message_box("APSVN — " + title,
+                        "%s\n\nDetails: %s" % (text, LOG))
     sys.exit(1)
 
 
@@ -713,23 +713,14 @@ class Api:
                 "folder” and open it yourself if you trust it.")
         if take_lock:
             self._guard(sc.lock, wc, [path], username=u, password=p, me=u)
-        try:
-            os.startfile(full)
-        except OSError as e:
-            raise sc.SvnError("Could not open the file: %s" % (e.strerror or e))
+        if not desktop.open_path(full):
+            raise sc.SvnError("Could not open the file")
         return ("Locked and opened" if take_lock else "Opened")
 
     def reveal(self, path):
-        """Показати файл у Провіднику Windows."""
+        """Показати файл у провіднику системи, виділивши саме його."""
         full = ex.inside(self._wc(), path)
-        try:
-            subprocess.run(["explorer.exe", "/select,", os.path.normpath(full)])
-        except Exception:
-            try:
-                os.startfile(os.path.dirname(full))
-            except Exception:
-                return False
-        return True
+        return desktop.reveal(full) or desktop.open_path(os.path.dirname(full))
 
     def list_new_folder(self, path):
         """Вміст кинутої теки — коли її розгорнули в списку."""
@@ -1025,16 +1016,12 @@ class Api:
         return self._guard(work)
 
     def open_folder(self):
-        try:
-            os.startfile(self._wc())
-            return True
-        except Exception:
-            return False
+        return desktop.open_path(self._wc())
 
     def open_rescue(self):
         try:
             os.makedirs(RESCUE, exist_ok=True)
-            os.startfile(RESCUE)
+            desktop.open_path(RESCUE)
             return True
         except Exception:
             return False
@@ -1051,13 +1038,9 @@ api = None
 def _on_closing():
     """Не дати закрити вікно посеред передачі — це псує робочу копію."""
     if api is not None and api.busy.is_set():
-        try:
-            import ctypes
-            ctypes.windll.user32.MessageBoxW(
-                0, "A transfer is in progress. Please wait — closing now "
-                   "could damage the project.", "APSVN", 0x30)
-        except Exception:
-            pass
+        desktop.message_box("APSVN",
+                            "A transfer is in progress. Please wait — "
+                            "closing now could damage the project.", warn=True)
         return False
     return True
 

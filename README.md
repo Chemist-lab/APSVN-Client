@@ -492,9 +492,42 @@ behind decisions that look odd until you know why.
   an estimate from throughput measured on this user's earlier transfers, and it
   is marked `≈`.
 
+### macOS
+
+There is a `.app` build, and **it is not notarised** — that is a deliberate
+choice, not an omission. Two things get confused here:
+
+* a `.app` is just a folder with an `Info.plist`. It costs nothing, needs no
+  Apple account, and is what gives an icon, a Dock entry and a double-click
+  launch. Skipping it saves twenty lines and loses all of that;
+* **notarisation** is what costs — a Developer ID at $99 a year. Without it
+  macOS holds the app on first launch and the person has to go to *System
+  Settings → Privacy & Security → Open Anyway*, once per install. Apple
+  removed the old Control-click shortcut, so that is now the only route.
+
+`codesign --sign -` in `package_mac.sh` is a third thing again: an **ad-hoc**
+signature, free and accountless. It is not notarisation and Gatekeeper is not
+fooled by it — but on Apple Silicon an unsigned binary does not warn, it
+simply refuses to start, so the build would be dead without it.
+
+```bash
+./package_mac.sh
+```
+
+**Everything under macOS is written but unrun.** It was developed on Windows,
+so treat `shellicon_mac.py` and `package_mac.sh` as drafts to be checked on a
+real Mac first. What *was* verified from Windows is that the macOS branches are
+chosen correctly and degrade to “no icon” rather than an exception — see
+`tests/test_desktop.py`, which fakes the platform flags and exercises them.
+
+Not yet solved: svn from Homebrew is not relocatable as it stands (it links
+against `/opt/homebrew/lib/*.dylib`), so the bundle currently falls back to the
+system `svn` and says so during the build. Making it portable means
+`install_name_tool` and rpath work — a job of its own.
+
 ### Tests
 
-Without a server — 420 checks against a temporary `file://` repository; they
+Without a server — 450 checks against a temporary `file://` repository; they
 leave nothing behind:
 
 ```bash
@@ -519,6 +552,10 @@ runtime\python.exe tests\test_apsvn.py
   visible, that the old buttons could not resolve the tree ones, that the
   new ones do, that a rescue copy is taken first, and that none of them
   can be submitted;
+* `test_desktop.py` — the platform layer: that `no_window()` cannot hand
+  Popen a Windows-only flag on POSIX, where settings live on each system,
+  the AppleScript escaping, and that the macOS icon branch imports and
+  returns nothing rather than raising;
 * `test_icons.py` — file-type icons: Blender, Unreal (whose extensions
   Windows does not know), folders, junk input, the cache;
 * `test_incoming.py` — what “Get latest” will bring: your own commit does

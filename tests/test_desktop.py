@@ -143,6 +143,43 @@ check("reveal теж не кидає винятку",
 
 print()
 print("=" * 64)
+print("7. Гілка macOS імпортується, а не падає")
+print("=" * 64)
+# Раніше shellicon кликав ctypes.WinDLL("shell32") НА РІВНІ МОДУЛЯ. На маку
+# це вбило б програму на самому імпорті — ще до того, як показати будь-яке
+# вікно чи пояснення. Звідси мак не запустиш, але САМЕ ЦЕ перевірити
+# можна: підмінюємо прапорці й дивимось, чи все ціле.
+import importlib
+_had = sys.modules.pop("shellicon", None)
+with AsPlatform(False, True):
+    try:
+        si = importlib.import_module("shellicon")
+        ok = True
+    except Exception as e:
+        si, ok = None, e
+    check("фасад імпортується в режимі macOS", ok is True, ok)
+    if si:
+        check("і бере саме macOS-гілку",
+              si._sys.__name__ == "shellicon_mac", si._sys.__name__)
+        check("іконка без PyObjC віддає None, а не падає",
+              si.icon(".blend") is None)
+        check("icons() віддає порожній словник",
+              si.icons([".blend", ".uasset"]) == {})
+        check("unreal_editor() не кидає винятку",
+              si.unreal_editor() is None)
+sys.modules.pop("shellicon", None)
+if _had is not None:
+    sys.modules["shellicon"] = _had
+
+# і навпаки — під Windows має братись віконна гілка й справді працювати
+if desktop.WINDOWS:
+    import shellicon as si_win
+    check("під Windows обрано віконну гілку",
+          si_win._sys.__name__ == "shellicon_win", si_win._sys.__name__)
+    check("і вона справді віддає іконку", bool(si_win.icon(".blend")))
+
+print()
+print("=" * 64)
 print("ПРОЙДЕНО: %d   ПРОВАЛЕНО: %d" % (len(OK), len(FAIL)))
 if FAIL:
     print("Провалені:", ", ".join(FAIL))

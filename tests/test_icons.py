@@ -14,7 +14,7 @@ import struct
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "app"))
 # vendor теж, і це не дрібниця: на маку іконки йдуть через PyObjC, який лежить
 # саме там. Без цього рядка shellicon чесно віддає None на ВСЕ, і всі перевірки
 # нижче провалюються з виглядом «система не знає жодного розширення» — тобто

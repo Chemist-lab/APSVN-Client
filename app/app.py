@@ -39,8 +39,11 @@ import traceback
 # залежності вендоряться в ./vendor — застосунок самодостатній, жодних
 # pip install у художників. Теку застосунку додаємо явно, бо запуск із
 # хвостовим "\" у шляху ламає стандартний sys.path[0].
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, APP_DIR)
+# Тека з кодом і корінь установки — це тепер РІЗНІ речі: код в app/, а
+# ui/, vendor/, runtime/ і svn/ лежать поруч із нею, на рівень вище.
+CODE_DIR = os.path.dirname(os.path.abspath(__file__))
+APP_DIR = os.path.dirname(CODE_DIR)
+sys.path.insert(0, CODE_DIR)
 sys.path.insert(0, os.path.join(APP_DIR, "vendor"))
 
 # Єдиний модуль, який знає, під якою системою ми працюємо. Імпортується ДО
@@ -1165,7 +1168,7 @@ if __name__ == "__main__":
         def _dress():
             for _ in range(20):            # вікно з'являється не миттєво
                 if desktop.set_window_icon("APSVN",
-                                           os.path.join(APP_DIR, "apsvn.ico")):
+                                           os.path.join(APP_DIR, "ui", "apsvn.ico")):
                     return
                 time.sleep(0.25)
 

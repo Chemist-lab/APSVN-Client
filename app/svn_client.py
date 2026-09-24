@@ -33,8 +33,9 @@ import xml.etree.ElementTree as ET
 
 import desktop
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_CANDIDATES = desktop.svn_candidates(_HERE)
+# Не від цього файлу, а від кореня установки: код тепер в app/, а svn
+# лишився на рівень вище, поруч із runtime і vendor.
+_CANDIDATES = desktop.svn_candidates(desktop.ROOT)
 
 
 def _find_svn():

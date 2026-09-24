@@ -13,11 +13,12 @@
 # та швидкості КОНКРЕТНОЇ людини. У кожного вони свої.
 
 $ErrorActionPreference = "Stop"
-$src = $PSScriptRoot
+# Скрипт лежить у build/, а пакуємо теку НАД ним.
+$src = Split-Path $PSScriptRoot -Parent
 $name = "APSVN"
 # Версію беремо з app.py, а не дублюємо тут: два місця розійшлися б на
 # першому ж релізі, і кнопка оновлення почала б брехати.
-$ver = (Select-String -Path (Join-Path $PSScriptRoot "app.py") `
+$ver = (Select-String -Path (Join-Path $src "app\app.py") `
         -Pattern '^VERSION = "([^"]+)"').Matches[0].Groups[1].Value
 "APSVN $ver"
 $stage = Join-Path ([IO.Path]::GetTempPath()) ("apsvn_pkg_" + [Guid]::NewGuid().ToString("N"))
@@ -37,18 +38,17 @@ $zip = Join-Path (Split-Path $src -Parent) "$name-$ver.zip"
 # і то в кращому разі: перевірка нижче її зупиняє, а не пропускає далі.
 $py = (Get-Command python -ErrorAction SilentlyContinue).Source
 if (-not $py) { $py = Join-Path $src "runtime\python.exe" }
-& $py (Join-Path $src "make_icon.py") | Out-Null
-& $py (Join-Path $src "make_launcher.py") | Out-Null
+& $py (Join-Path $PSScriptRoot "make_icon.py") | Out-Null
+& $py (Join-Path $PSScriptRoot "make_launcher.py") | Out-Null
 if (-not (Test-Path (Join-Path $src "APSVN.exe"))) { throw "APSVN.exe не зібрався" }
 
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
 $rc = @($src, $dest, "/E",
-        "/XD", "tests", "__pycache__",
+        "/XD", "tests", "__pycache__", "build", "docs", ".git",
         # Збіркове знаряддя не їде до художника — ні наше, ні маківське.
-        "/XF", "*.pyc", "package.ps1", "*.sh", "*.apsvn-part",
+        "/XF", "*.pyc", "*.apsvn-part", ".git*",
         # Збиральне: малює іконку й зшиває запускач. Готові apsvn.ico,
         # APSVN.exe і ui\icon.png їдуть, а те, чим їх зроблено, — ні.
-        "make_icon.py", "make_launcher.py", "peres.py",
         "/NFL", "/NDL", "/NJH", "/NJS", "/NP")
 & robocopy @rc | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed: $LASTEXITCODE" }

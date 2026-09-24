@@ -31,9 +31,10 @@ import sys
 import zipfile
 from ctypes import wintypes
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ICO = os.path.join(HERE, "apsvn.ico")
-OUT = os.path.join(HERE, "APSVN.exe")
+HERE = os.path.dirname(os.path.abspath(__file__))     # build/
+ROOT = os.path.dirname(HERE)                          # корінь установки
+ICO = os.path.join(ROOT, "ui", "apsvn.ico")
+OUT = os.path.join(ROOT, "APSVN.exe")
 
 RT_ICON = 3
 RT_GROUP_ICON = 14
@@ -122,10 +123,18 @@ def set_icon(exe, images):
 # ярлик узагалі стартує з системної.
 MAIN = '''import os, sys, runpy
 here = os.path.dirname(os.path.abspath(sys.argv[0]))
-sys.path.insert(0, here)
+code = os.path.join(here, "app")
+sys.path.insert(0, code)
 sys.path.insert(0, os.path.join(here, "vendor"))
 os.chdir(here)
-runpy.run_path(os.path.join(here, "app.py"), run_name="__main__")
+if not os.path.isdir(os.path.join(here, "runtime")):
+    import ctypes
+    ctypes.windll.user32.MessageBoxW(
+        0, "The \\"runtime\\" folder is missing next to APSVN.exe. "
+           "Most likely only part of the APSVN folder was copied \\u2014 "
+           "copy the whole folder and try again.", "APSVN", 0x10)
+    raise SystemExit(1)
+runpy.run_path(os.path.join(code, "app.py"), run_name="__main__")
 '''
 
 

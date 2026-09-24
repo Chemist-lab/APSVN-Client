@@ -14,10 +14,11 @@
 set -euo pipefail
 
 APP_NAME="APSVN"
-SRC="$(cd "$(dirname "$0")" && pwd)"
+# Скрипт лежить у build/, а збираємо теку НАД ним.
+SRC="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$SRC/dist"
 APP="$OUT/$APP_NAME.app"
-VER="$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$SRC/app.py")"
+VER="$(sed -n 's/^VERSION = "\(.*\)"/\1/p' "$SRC/app/app.py")"
 
 if [ -z "$VER" ]; then
   echo "не знайшов VERSION в app.py" >&2
@@ -47,25 +48,24 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 # тож .app зібрався б без нього й помер би на старті з «could not start».
 # Помилка того самого роду, що й решта в цій збірці: те, що на машині розробника
 # лежить поруч, у bundle не потрапляє, і видно це аж у художника.
-for f in "$SRC"/*.py; do
-  case "$(basename "$f")" in
-    # *_win.py на маку не імпортується ніколи, а тягнути в збірку код для
-    # чужої системи означає лише збивати з пантелику того, хто полізе всередину.
-    *_win.py) continue ;;
-    # Збиральне приладдя: малює іконку й робить APSVN.exe. Художникові воно ні
-    # до чого, а make_launcher.py ще й суто віконне.
-    make_*.py) continue ;;
-    # Те саме, тільки імені з _win не має: читає таблицю ресурсів PE, тобто
-    # має сенс лише на Windows і лише під час збірки.
-    peres.py) continue ;;
-  esac
-  cp "$f" "$APP/Contents/Resources/"
-done
+# Код їде текою app/ — цілком, без перебору й без списку винятків.
+# Перелік уже підводив: у main зʼявився updater.py, app.py його імпортує, а в
+# списку його, звісно, не було, тож .app зібрався б без нього й помер на
+# старті. Тепер вибирати нема з чого — усередині app/ лише те, що працює.
+#
+# Усередині bundle будова та сама, що й на Windows: Contents/Resources — це
+# корінь установки, код у Resources/app. desktop.ROOT рахується як тека над
+# app/, тож розійтися системи не можуть.
+mkdir -p "$APP/Contents/Resources/app"
+cp "$SRC"/app/*.py "$APP/Contents/Resources/app/"
+# *_win.py на маку не імпортується ніколи, а тягнути в збірку код для чужої
+# системи означає лише збивати з пантелику того, хто полізе всередину.
+rm -f "$APP/Contents/Resources/app/"*_win.py
 cp -R "$SRC/ui" "$APP/Contents/Resources/"
 # Іконка bundle. Без неї Finder і Dock показують порожній аркуш — програма
 # виглядає як щось недороблене ще до першого запуску. CFBundleIconFile нижче
 # називає її БЕЗ розширення, так вимагає macOS.
-[ -f "$SRC/apsvn.icns" ] && cp "$SRC/apsvn.icns" "$APP/Contents/Resources/" \
+[ -f "$SRC/ui/apsvn.icns" ] && cp "$SRC/ui/apsvn.icns" "$APP/Contents/Resources/" \
   || echo "  УВАГА: apsvn.icns немає — .app лишиться без іконки" >&2
 [ -d "$SRC/vendor" ] && cp -R "$SRC/vendor" "$APP/Contents/Resources/"
 
@@ -132,9 +132,9 @@ cat > "$APP/Contents/MacOS/$APP_NAME" <<LAUNCH
 HERE="\$(cd "\$(dirname "\$0")" && pwd)"
 DIR="\$(cd "\$HERE/../Resources" && pwd)"
 export PYTHONHOME="\$HERE/../Frameworks/Python.framework/Versions/$RUNTIME"
-export PYTHONPATH="\$DIR:\$DIR/vendor"
+export PYTHONPATH="\$DIR/app:\$DIR/vendor"
 export PYTHONDONTWRITEBYTECODE=1
-exec "\$HERE/python3" "\$DIR/app.py" "\$@"
+exec "\$HERE/python3" "\$DIR/app/app.py" "\$@"
 LAUNCH
 
 else
@@ -142,7 +142,7 @@ else
 cat > "$APP/Contents/MacOS/$APP_NAME" <<'LAUNCH'
 #!/bin/bash
 DIR="$(cd "$(dirname "$0")/../Resources" && pwd)"
-export PYTHONPATH="$DIR:$DIR/vendor:${PYTHONPATH:-}"
+export PYTHONPATH="$DIR/app:$DIR/vendor:${PYTHONPATH:-}"
 # Без цього перший же запуск клав 174 файли .pyc у 41 теку __pycache__ ВСЕРЕДИНІ
 # підписаного bundle і ламав пломбу підпису: codesign після цього каже "a sealed
 # resource is missing or invalid". Байт-код кладеться на збірці (нижче), тобто
@@ -164,7 +164,7 @@ CANDS+=("$(command -v python3 2>/dev/null)" /usr/bin/python3)
 
 for py in "${CANDS[@]}"; do
   if usable "$py"; then
-    exec "$py" "$DIR/app.py" "$@"
+    exec "$py" "$DIR/app/app.py" "$@"
   fi
 done
 
@@ -225,8 +225,12 @@ fi
 # лежать усі модулі. Тобто import брав би їх звідти й проходив навіть тоді,
 # коли в bundle не поїхало нічого. Перевірено: без -P контроль мовчав про
 # bundle, з якого прибрано updater.py.
+# Шлях саме на Resources/app, а не на Resources. Після переїзду коду в app/
+# другий варіант знайшов би ТЕКУ app як пакет-простір імен, import пройшов би
+# успішно й не перевірив нічого — та сама декоративна перевірка, від якої
+# рятує -P, тільки з іншого боку.
 CHECK_ENV=(env "PYTHONHOME=$CHECK_HOME"
-           "PYTHONPATH=$APP/Contents/Resources:$APP/Contents/Resources/vendor")
+           "PYTHONPATH=$APP/Contents/Resources/app:$APP/Contents/Resources/vendor")
 if ! "${CHECK_ENV[@]}" "$CHECK_PY" -P -c 'import app' >/dev/null 2>&1; then
   echo "СТОП: зібраний app не імпортується — у bundle чогось бракує." >&2
   "${CHECK_ENV[@]}" "$CHECK_PY" -P -c 'import app' 2>&1 | tail -5 >&2

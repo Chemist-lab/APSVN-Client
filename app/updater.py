@@ -38,7 +38,16 @@ TIMEOUT = 20
 
 # Файли, за якими впізнаємо, що завантажили саме APSVN, а не щось інше.
 # Перевірка дешева, а ціна помилки — розпакувати чуже поверх програми.
-MUST_HAVE = ("app.py", "ui/index.html", "svn_client.py")
+# Ознаки «це справді APSVN». ДВА набори, і другий тут не про красу.
+#
+# До версії 1.0.0 код лежав у корені збірки; з 1.0.1 він в app/. Клієнт старої
+# версії перевіряє СКАЧАНИЙ архів своїм списком — тож якби список був один,
+# кожен переїзд коду ламав би оновлення для всіх, хто ще на попередній версії,
+# і лікувалось би це лише ручним перевстановленням. Тепер підходить будь-яка з
+# розкладок, і наступний переїзд нічого не зламає.
+LAYOUTS = (("app/app.py", "ui/index.html", "app/svn_client.py"),
+           ("app.py", "ui/index.html", "svn_client.py"))
+MUST_HAVE = LAYOUTS[0]
 
 
 def parse_version(s):
@@ -177,8 +186,10 @@ def stage(zip_path, into):
 
 
 def _markers(d):
-    return all(os.path.exists(os.path.join(d, m.replace("/", os.sep)))
-               for m in MUST_HAVE)
+    """Чи схожа тека на корінь збірки — за будь-якою з відомих розкладок."""
+    return any(all(os.path.exists(os.path.join(d, m.replace("/", os.sep)))
+                   for m in layout)
+               for layout in LAYOUTS)
 
 
 def _find_root(top):

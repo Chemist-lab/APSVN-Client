@@ -15,6 +15,7 @@
 якого художник ніколи не побачить у процесі.
 """
 import math
+import os
 import struct
 import zlib
 
@@ -200,26 +201,29 @@ def ico(images):
     return head + entries + blob
 
 
+# Куди кладемо намальоване. Скрипт лежить у build/, а результат потрібен
+# у ui/ — поруч із рештою того, як програма виглядає.
+HERE = os.path.dirname(os.path.abspath(__file__))
+UI = os.path.join(os.path.dirname(HERE), "ui")
+
+
 if __name__ == "__main__":
     # 256 лишається PNG: у такому розмірі це втричі менший файл, і Windows
     # його там приймає. Решта — DIB, інакше exe покаже чужу іконку.
     imgs = [(s, png(s, render(s)) if s >= 256 else dib(s, render(s)))
             for s in SIZES]
     data = ico(imgs)
-    with open("apsvn.ico", "wb") as fh:
+    with open(os.path.join(UI, "apsvn.ico"), "wb") as fh:
         fh.write(data)
     # Той самий малюнок для шапки програми. Окремим файлом, а не data:URI в
     # HTML: інакше картинка живе двома копіями — у коді й у розмітці — і одна
     # з них рано чи пізно відстане від іншої.
-    import os
-    ui = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")
-    if os.path.isdir(ui):
-        with open(os.path.join(ui, "icon.png"), "wb") as fh:
-            fh.write(png(64, render(64)))
-        print("ui/icon.png — 64x64")
+    with open(os.path.join(UI, "icon.png"), "wb") as fh:
+        fh.write(png(64, render(64)))
+    print("ui/icon.png — 64x64")
 
     mac = icns((16, 32, 64, 128, 256, 512))
-    with open("apsvn.icns", "wb") as fh:
+    with open(os.path.join(UI, "apsvn.icns"), "wb") as fh:
         fh.write(mac)
     print("apsvn.icns — %d байт" % len(mac))
 

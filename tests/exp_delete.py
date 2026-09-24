@@ -7,8 +7,8 @@ import subprocess
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__))))
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(_ROOT, "app"))
 import svn_client as sc
 
 NAME = "звʼязок міста.txt"          # U+02BC — немає в cp1251/1252/жодній ANSI

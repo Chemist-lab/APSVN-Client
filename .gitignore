@@ -16,5 +16,5 @@ __pycache__/
 error.log
 
 # Результат збірки — його місце в релізі, а не в історії
-/APSVN.zip
+/APSVN-*.zip
 /dist/

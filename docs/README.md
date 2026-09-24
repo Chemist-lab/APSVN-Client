@@ -7,7 +7,7 @@ a handful of plain actions: **get latest**, **lock a file**, **submit**,
 ## For the artist
 
 1. Copy the whole `APSVN` folder (desktop, D: drive — anywhere).
-2. Run `APSVN.bat`.
+2. Run `APSVN.exe`.
 3. Fill in once: the project address, a folder on your computer, your user
    name and password.
 
@@ -195,16 +195,16 @@ to submit.
 
 ## Giving APSVN to somebody else
 
-Run `package.ps1` — it puts `APSVN-<version>.zip` next to the folder (about 20 MB
+Run `build\package.ps1` — it puts `APSVN-<version>.zip` next to the folder (about 20 MB
 compressed, 43 MB unpacked). Everything the artist needs is inside; there is
 nothing to install.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File package.ps1
+powershell -ExecutionPolicy Bypass -File build\package.ps1
 ```
 
 Hand them the ZIP any way you like — a share, Nextcloud, a messenger. They
-unpack it wherever they want and run `APSVN.bat`. On first start they fill in
+unpack it wherever they want and run `APSVN.exe`. On first start they fill in
 the project address, their **own** user name and password, and a folder for the
 files.
 
@@ -239,12 +239,38 @@ one particular server and its `/scm/repo/…` paths; that server had already
 moved on, and the address in the README was quietly wrong for weeks. Keep it
 generic.)
 
+### Where things live
+
+Only one file sits in the root, and it is the one to double-click.
+
+```
+APSVN.exe      the program
+app/           the code
+ui/            the interface, and the icons
+runtime/       its own Python — nothing is installed on the machine
+svn/           its own Subversion
+vendor/        third-party Python packages
+build/         packaging and the icon generator, never shipped
+docs/          this file
+tests/
+```
+
+The split matters more than it looks. `app/` is the code; everything beside it
+is what the code *uses*. A single notion of the root — `desktop.ROOT`, the
+folder above `app/` — is where every module finds its neighbours; before it,
+each one measured from its own file, and moving the code one level down would
+have broken each of those places separately and **silently**: svn “not found”,
+the interface not opening, no icon.
+
+The same shape holds inside the macOS bundle: `Contents/Resources` plays the
+part of the root, with the code in `Resources/app`.
+
 ### What is inside
 
 | Folder / file   | What it is |
 |-----------------|------------|
-| `app.py`        | application logic, the bridge between the interface and svn |
-| `svn_client.py` | wrapper around `svn.exe` |
+| `app/app.py`    | application logic, the bridge between the interface and svn |
+| `app/svn_client.py` | wrapper around `svn.exe` |
 | `ui/`           | the interface (HTML/CSS/JS) |
 | `runtime/`      | Python 3.14 embeddable — so nothing has to be installed |
 | `runtime-mac/`  | the same idea on macOS: a portable python.org framework, built by `make_runtime_mac.sh` |
@@ -512,8 +538,9 @@ behind decisions that look odd until you know why.
   downloaded. The explanations live in `updater.py`; the throwaway script gets
   none.
 * **The downloaded archive is checked before anything is swapped**: its size
-  against what the release declares, that it opens, that it contains `app.py`,
-  `ui/index.html` and `svn_client.py`, and that no entry tries to write
+  against what the release declares, that it opens, that it holds the files a build
+  holds — in either the old or the new layout, so that moving code around
+  never breaks updating for people still on the previous version — and that no entry tries to write
   outside the staging folder. The last one is zip-slip — cheap to check, and
   the cost of missing it is not “no update” but “something overwritten
   elsewhere”.
@@ -603,7 +630,8 @@ it looked. When there is, a dot appears on the Settings button and the menu
 item reads *Update to 1.1.0*. No pop-up interrupts the work: a program that
 nags about updates teaches people to close its windows without reading them.
 
-Publishing a new version is: bump `VERSION` in `app.py`, run `package.ps1`,
+Publishing a new version is: bump `VERSION` in `app/app.py`, run
+`build\package.ps1`,
 create a release on GitHub tagged `v<VERSION>` and attach the zip. The client
 reads `/releases/latest`, needs no authentication while the repository is
 public, and picks the asset for the system it is running on (`-mac.zip` or

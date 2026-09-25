@@ -138,6 +138,49 @@ def _thumb(full):
         return None
 
 
+def _placeholders(wc, send, st):
+    """Заглушки на місці перенесеного, яке svn інакше не зможе назвати.
+
+    Здача переносу мусить назвати і старе місце, а файлу там уже немає. Для
+    імені, якого немає в кодовій сторінці Windows (апостроф U+02BC, кирилиця
+    на англійській Windows), --targets тримається на 8.3-псевдонімі, а
+    псевдонім Windows видає лише тому, що існує. Порожня заглушка його
+    повертає — той самий прийом, що в svn_client.remove. Перевірено
+    tests/exp_move.py: із заглушкою здача проходить, без неї — ні.
+    """
+    cp = sc._acp()
+    made = []
+    for x in send:
+        f = st.get(x) or {}
+        if not f.get("moved_to") or sc._fits(x, cp):
+            continue
+        full = os.path.join(wc, x.replace("/", os.sep))
+        if os.path.exists(full):
+            continue
+        dest = os.path.join(wc, f["moved_to"].replace("/", os.sep))
+        try:
+            if os.path.isdir(dest):
+                os.makedirs(full)
+            else:
+                open(full, "wb").close()
+            made.append(full)
+        except OSError:
+            pass
+    return made
+
+
+def _drop_placeholders(made):
+    """Після здачі заглушки лишаються на диску невідомими svn — прибираємо."""
+    for full in made:
+        try:
+            if os.path.isdir(full):
+                os.rmdir(full)
+            elif os.path.isfile(full) and os.path.getsize(full) == 0:
+                os.unlink(full)
+        except OSError:
+            pass
+
+
 def project_id(url, wc):
     """Стабільний id: повторне підключення того самого проєкту не плодить
     записів і не губить збережений пароль."""
@@ -1156,11 +1199,21 @@ class Api:
 
         def work():
             st = {f["path"]: f for f in sc.status(wc, me=u)}
+            # Перенос здається лише обома половинами разом — інакше svn
+            # відмовляє (E200009 «both sides of the move must be committed
+            # together», перевірено tests/exp_move.py). Людина в списку бачить
+            # одну — нове місце, — тож другу додаємо самі.
+            sel = list(paths)
+            for x in list(sel):
+                f = st.get(x) or {}
+                for other in (f.get("moved_from"), f.get("moved_to")):
+                    if other and other not in sel:
+                        sel.append(other)
             # Збираємо ВСІ перепони одразу, а не падаємо на першій. З появою
             # «виділити все» людина позначає сорок файлів, і відмова по одному
             # перетворилася б на сорок заходів.
             junk, taken, unlocked = [], [], []
-            for x in paths:
+            for x in sel:
                 if sc.JUNK_RE.search(os.path.basename(x)):
                     junk.append(x)
                     continue
@@ -1194,11 +1247,11 @@ class Api:
                 return any(st.get("/".join(parts[:i]), {}).get("status")
                            == "unversioned" for i in range(1, len(parts) + 1))
 
-            fresh = [x for x in paths
+            fresh = [x for x in sel
                      if st.get(x, {}).get("status") == "unversioned"
                      or (x not in st and under_new_dir(x))]
-            gone = [x for x in paths if st.get(x, {}).get("status") == "missing"]
-            send = list(paths)
+            gone = [x for x in sel if st.get(x, {}).get("status") == "missing"]
+            send = list(sel)
             if fresh:
                 # Якщо вибрано теку, svn add додасть її вміст сам. Передавати
                 # ще й окремі файли з неї не можна — другий add на той самий
@@ -1207,21 +1260,22 @@ class Api:
                          if not any(x != d and x.startswith(d + "/")
                                     for d in fresh)]
                 sc.add(wc, fresh)
-                # svn add --parents заводить і теки-батьки. Якщо не згадати їх
-                # у коміті, svn відмовиться: «тека не існує в репозиторії, а її
-                # дитина в коміті є». Художник, що перетягнув теку з кадрами,
-                # напоровся б на це одразу.
                 after = {f["path"]: f for f in sc.status(wc, me=u)}
-                have = set(send)
-                for x in fresh:
-                    parts = x.replace("\\", "/").split("/")[:-1]
-                    for i in range(1, len(parts) + 1):
-                        d = "/".join(parts[:i])
-                        if d not in have and after.get(d, {}).get("status") == "added":
-                            send.insert(0, d)      # теки — перед своїм вмістом
-                            have.add(d)
             else:
                 after = st
+            # Нові теки-батьки мусять їхати разом зі своїм вмістом, інакше svn
+            # відмовиться: «тека не існує в репозиторії, а її дитина в коміті
+            # є». Буває двояко: svn add --parents завів теки для кинутої теки з
+            # кадрами — або файл перенесли в теку, яку svn ще не знав, і
+            # move_items її додав. Тому перевіряємо все, що їде, а не лише нове.
+            have = set(send)
+            for x in list(send):
+                parts = x.replace("\\", "/").split("/")[:-1]
+                for i in range(1, len(parts) + 1):
+                    d = "/".join(parts[:i])
+                    if d not in have and after.get(d, {}).get("status") == "added":
+                        send.insert(0, d)          # теки — перед своїм вмістом
+                        have.add(d)
             if gone:
                 sc.remove(wc, gone)
             # Скільки рядків svn насправді надрукує. Вибраних рядків для цього
@@ -1253,10 +1307,14 @@ class Api:
             # тості, а перемикач лишається під рукою в рядку здачі.
             keep = self.conf.get("prefs", {}).get("keep_locks", False) \
                 if keep_locks is None else bool(keep_locks)
-            out = sc.commit(wc, send, message, username=u, password=p,
-                            progress=self._tick, total=expect or len(send),
-                            total_bytes=nbytes or None,
-                            rate_hint=self._rate("upload"), keep_locks=keep)
+            holders = _placeholders(wc, send, after)
+            try:
+                out = sc.commit(wc, send, message, username=u, password=p,
+                                progress=self._tick, total=expect or len(send),
+                                total_bytes=nbytes or None,
+                                rate_hint=self._rate("upload"), keep_locks=keep)
+            finally:
+                _drop_placeholders(holders)
             took = time.monotonic() - t0
             self._learn_rate("upload", nbytes, took)
             if nbytes > 8 * 1024 * 1024 and sc.COMMIT_RE.search(out):
@@ -1267,7 +1325,8 @@ class Api:
                 sc.purge_deleted(wc, gone)
             # локи навмисно переживають коміт (див. svn_client.commit) —
             # людина має про це знати, інакше файл лишиться зайнятим мовчки
-            held = [x for x in paths if st.get(x, {}).get("lock_mine")]
+            held = [x for x in paths if st.get(x, {}).get("lock_mine")
+                    and not st.get(x, {}).get("moved_to")]
             if held and sc.COMMIT_RE.search(out):
                 if keep:
                     out += (" The file stays locked by you — release it when "
@@ -1339,13 +1398,183 @@ class Api:
 
     # --- провідник проєкту ---
     def browse(self, path=""):
-        """Вміст однієї теки. НЕ бере довгий замок: це читання, і людина має
-        могти ходити проєктом навіть коли щось передається. Але поки триває
-        передача — відступаємо, щоб не смикати робочу копію."""
-        if self.busy.is_set():
-            raise sc.SvnError("Please wait — a transfer is in progress.")
+        """Вміст однієї теки — БЕЗ мережі (див. шапку explorer.py).
+
+        Що нового на сервері й чиї локи — з останньої синхронізації, яку
+        state() і так робить кожні 10 с. Раніше кожен клік по теці йшов на
+        сервер і під час передачі взагалі відмовляв; тепер ходити проєктом
+        можна й посеред передачі — лише без свіжого локального svn, бо той
+        поруч зі svn, що пише, впирається в замок копії.
+        """
+        wc = self._wc()
+        known = (self._last.get(self.c.get("id")) or {}).get("files")
+        return ex.browse(wc, path, known=known if known is not None else [],
+                         local=not self.busy.is_set())
+
+    def full_paths(self, paths):
+        """Повні шляхи на диску — у тому вигляді, який розуміє ця система."""
+        wc = self._wc()
+        return [ex.inside(wc, p) for p in (paths or [])]
+
+    def copy_paths(self, paths):
+        """Скопіювати шляхи файлів — по одному в рядку, щоб вставляти в Blender."""
+        full = self.full_paths(paths)
+        if not full:
+            raise sc.SvnError("Nothing was picked")
+        sep = "\r\n" if desktop.WINDOWS else "\n"
+        if not desktop.copy_text(sep.join(full)):
+            raise sc.SvnError("Could not put the path on the clipboard")
+        return ("Copied: " + full[0]) if len(full) == 1 \
+            else "Copied %d paths" % len(full)
+
+    def drag_supported(self):
+        return desktop.drag_supported(window)
+
+    def drag_out(self, paths):
+        """Потягнути файли з вікна: у Blender, у Провідник, на свою теку.
+
+        НЕ бере довгий замок і нічого не міняє: це лише «ось тобі файли».
+        Перенос, якщо кинули на теку в самому APSVN, інтерфейс зробить потім
+        окремим move_items — коли вже відомо, куди саме.
+        """
+        wc = self._wc()
+        full = [ex.inside(wc, p) for p in (paths or [])]
+        full = [f for f in full if os.path.exists(f)]
+        if not full:
+            return "none"
+        r = desktop.drag_files(window, full)
+        return "unsupported" if r is None else r
+
+    def move_items(self, paths, dest):
+        """Перенести файли й теки в іншу теку проєкту.
+
+        Через svn move, а не простим перенесенням на диску: так історія йде
+        за файлом, а сервер переносить за ним і задачу. Здавати треба обидві
+        половини разом — це робить do_commit сам, людина бачить один рядок.
+
+        Кожен файл — окремо: один, що не може поїхати (чужий лок, тезка в
+        теці призначення), не зупиняє решту, а потрапляє в перелік із
+        причиною — як і в restore_many.
+        """
         wc, (u, p) = self._wc(), self._creds()
-        return ex.browse(wc, path, username=u, password=p, remote=True)
+        dest = (dest or "").replace("\\", "/").strip("/")
+        paths = [x.replace("\\", "/").strip("/") for x in (paths or [])
+                 if x and x.strip("/")]
+        if not paths:
+            raise sc.SvnError("Nothing was picked")
+        known = {f["path"]: f for f in
+                 (self._last.get(self.c.get("id")) or {}).get("files") or []}
+
+        def work():
+            dfull = ex.inside(wc, dest)
+            if not os.path.isdir(dfull):
+                raise sc.SvnError("That folder is no longer there.")
+            st = {f["path"]: f for f in sc.status(wc, me=u)}
+
+            def loose(x):
+                """Невідоме svn: саме або всередині невідомої теки."""
+                return any(q == x or x.startswith(q + "/") for q, f in st.items()
+                           if f.get("status") == "unversioned")
+
+            def other_lock(x):
+                """Хто інший тримає x (або щось усередині теки x)."""
+                for q, f in known.items():
+                    if (q == x or q.startswith(x + "/")) and f.get("lock_owner") \
+                            and not f.get("lock_mine") and not f.get("lock_stale"):
+                        return f["lock_owner"]
+                return None
+
+            moved, skipped, carried_lock = [], [], False
+            dest_ready = not loose(dest)
+            for rel in paths:
+                name = rel.rsplit("/", 1)[-1]
+                parent = rel.rsplit("/", 1)[0] if "/" in rel else ""
+                target = (dest + "/" + name) if dest else name
+                if parent == dest:
+                    continue                         # і так тут
+                src = ex.inside(wc, rel)
+                if not os.path.exists(src):
+                    skipped.append("%s — it is no longer there" % rel)
+                    continue
+                if dest == rel or dest.startswith(rel + "/"):
+                    skipped.append("%s — a folder cannot go inside itself" % rel)
+                    continue
+                if os.path.exists(ex.inside(wc, target)):
+                    skipped.append("%s — “%s” already has a file with that name"
+                                   % (rel, dest or "the project root"))
+                    continue
+                f = st.get(rel) or {}
+                if f.get("status") in ("conflicted", "missing", "deleted"):
+                    skipped.append("%s — sort out its state in “Changes” first"
+                                   % rel)
+                    continue
+                who = other_lock(rel)
+                if who:
+                    # Здача переносу видаляє старе місце, а видалити файл під
+                    # чужим локом сервер не дасть — краще сказати зараз, ніж
+                    # наприкінці здачі. І колега просто зараз у ньому працює.
+                    skipped.append("%s — %s is working on it; ask them to submit "
+                                   "and release first" % (rel, who))
+                    continue
+                try:
+                    if loose(rel):
+                        # svn про нього не знає — звичайне перенесення файлу
+                        shutil.move(src, os.path.join(dfull, name))
+                    else:
+                        if not dest_ready:
+                            sc.add_dir(wc, dest)
+                            dest_ready = True
+                        sc.move_into(wc, rel, dest)
+                        if f.get("lock_mine"):
+                            carried_lock = True
+                    moved.append(name)
+                except (sc.SvnError, OSError) as e:
+                    skipped.append("%s — %s" % (rel, e))
+
+            if not moved and skipped:
+                raise sc.SvnError("Nothing was moved:\n" + _bullets(skipped))
+            if not moved:
+                return "Already there"
+            where = "“%s”" % (dest.rsplit("/", 1)[-1] if dest else "the project root")
+            msg = ("Moved “%s” to %s." % (moved[0], where) if len(moved) == 1
+                   else "Moved %d items to %s." % (len(moved), where))
+            msg += " Not on the server yet — submit it in “Changes”."
+            if carried_lock:
+                # Лок тримається за старе місце (перевірено tests/exp_move.py):
+                # після здачі файл на новому місці вільний і знову read-only.
+                msg += (" Your lock stays with the old place until you submit; "
+                        "after that, lock it again if you keep editing.")
+            if skipped:
+                msg += "\n\nLeft where they were:\n" + _bullets(skipped)
+            return msg
+
+        return self._guard(work)
+
+    def move_back(self, path):
+        """Повернути перенесене туди, звідки взяли.
+
+        svn сам упізнає повернення: статус стає чистим, наче нічого й не було,
+        а зміни, зроблені у файлі вже після переносу, лишаються (перевірено
+        tests/exp_move.py). Тому це не «скасувати все», а саме «на місце».
+        """
+        wc, (u, p) = self._wc(), self._creds()
+
+        def work():
+            f = {x["path"]: x for x in sc.status(wc, me=u)}.get(path) or {}
+            src = f.get("moved_from")
+            if not src:
+                raise sc.SvnError("This was not moved — there is nowhere to put it back.")
+            home = src.rsplit("/", 1)[0] if "/" in src else ""
+            if not os.path.isdir(ex.inside(wc, home)):
+                raise sc.SvnError("The folder it came from is gone: %s"
+                                  % (home or "(project root)"))
+            if os.path.exists(ex.inside(wc, src)):
+                raise sc.SvnError("There is already something at %s" % src)
+            sc.move_into(wc, path, home)
+            return "“%s” is back in “%s”." % (src.rsplit("/", 1)[-1],
+                                              home or "the project root")
+
+        return self._guard(work)
 
     def file_details(self, path):
         if self.busy.is_set():
@@ -1500,10 +1729,17 @@ class Api:
         choice = choice or ("mine" if keep_mine else "theirs")
 
         def work():
-            kinds = {f["path"]: f.get("conflict_kind")
-                     for f in sc.status(wc)}
+            rows = {f["path"]: f for f in sc.status(wc)}
+            kinds = {k: f.get("conflict_kind") for k, f in rows.items()}
             saved = 0
             for path in paths:
+                if kinds.get(path) == "moved" and choice == "theirs":
+                    # «Повернути як було»: перенос скасовується цілком, старе
+                    # місце бере версію колеги, а твоя копія з нового місця
+                    # їде в «Safety copies» (див. svn_client.undo_move).
+                    if sc.undo_move(wc, path, rows[path].get("moved_to"), RESCUE):
+                        saved += 1
+                    continue
                 if choice != "working" and sc.rescue_copy(wc, path, RESCUE):
                     saved += 1
                 sc.resolve_conflict(wc, path, kinds.get(path), choice)

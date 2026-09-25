@@ -109,7 +109,11 @@
     </section>
 
     <section id="tab-browse" class="hidden">
-      <div class="crumbs"><span id="crumbs"></span>
+      <div class="crumbs">
+        <button id="br-back" class="navbtn" title="back (Alt+←)" disabled>◀</button>
+        <button id="br-fwd" class="navbtn" title="forward (Alt+→)" disabled>▶</button>
+        <button id="br-up" class="navbtn" title="one folder up (Backspace)" disabled>▲</button>
+        <span id="crumbs"></span>
         <span class="spacer"></span>
         <span id="br-count" class="dim"></span></div>
       <div class="br-split">
@@ -194,6 +198,8 @@
       </div>
     </div>
   </div>
+  <!-- контекстне меню провідника: поза #main, щоб лягати поверх усього -->
+  <div id="ctx" class="menu ctx hidden"></div>
   <div id="toast" class="hidden"></div>
   <div id="busy" class="hidden">
     <div class="spin"></div>

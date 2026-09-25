@@ -167,18 +167,27 @@ print("=" * 64)
 friend = os.path.join(base, "друга")
 sc.checkout(url, friend)
 sc.lock(friend, ["Кадри/сцена міста.blend"], me=ME)
+# Провідник показує чуже станом на ОСТАННЮ синхронізацію — у програмі її
+# робить опитування кожні 10 с. Без неї чужого лока ще не видно, і це чесно:
+# тека читається без мережі.
+d = api.browse("Кадри")
+by = {e["name"]: e for e in d["entries"]}
+check("до синхронізації чужого лока ще не видно (тека — без мережі)",
+      by["сцена міста.blend"]["lock_owner"] is None, by["сцена міста.blend"])
+api.state(remote=True)
 d = api.browse("Кадри")
 by = {e["name"]: e for e in d["entries"]}
 f = by["сцена міста.blend"]
-check("лок із чужої копії видно", f["lock_owner"] == ME, f)
+check("лок із чужої копії видно після синхронізації", f["lock_owner"] == ME, f)
 check("він не вважається нашим", f["lock_mine"] is False, f)
 check("файл при цьому НЕ змінений", f["status"] in ("normal", "none"), f["status"])
 sc.unlock(friend, ["Кадри/сцена міста.blend"])
 
 api.do_lock(["Кадри/сцена міста.blend"])
 by = {e["name"]: e for e in api.browse("Кадри")["entries"]}
-check("власний лок помічено як наш", by["сцена міста.blend"]["lock_mine"] is True,
-      by["сцена міста.blend"])
+# А СВІЙ лок — одразу, без синхронізації: його видно з локального svn.
+check("власний лок помічено як наш — одразу, без синхронізації",
+      by["сцена міста.blend"]["lock_mine"] is True, by["сцена міста.blend"])
 
 print()
 print("=" * 64)
@@ -187,6 +196,7 @@ print("=" * 64)
 open(os.path.join(friend, "Кадри", "новий-від-колеги.blend"), "wb").write(b"N" * 20)
 sc.add(friend, ["Кадри/новий-від-колеги.blend"])
 sc.commit(friend, ["Кадри/новий-від-колеги.blend"], "колега додав")
+api.state(remote=True)                  # синхронізація — як опитування в програмі
 d = api.browse("Кадри")
 by = {e["name"]: e for e in d["entries"]}
 g = by.get("новий-від-колеги.blend")
@@ -204,11 +214,13 @@ kadry = next(e for e in d["entries"] if e["name"] == "Кадри")
 check("тека з новим комітом усередині помічена",
       kadry.get("new_inside") is True, kadry)
 sc.update(wc, username=ME, password="pw")
+api.state(remote=True)
 d = api.browse("")
 kadry = next(e for e in d["entries"] if e["name"] == "Кадри")
 check("після оновлення значок зникає", not kadry.get("new_inside"), kadry)
 # локи ревізій не створюють, тож із теки їх не видно — це відомо й навмисно
 sc.lock(friend, ["Кадри/нотатки.txt"], me=ME)
+api.state(remote=True)
 d = api.browse("")
 kadry = next(e for e in d["entries"] if e["name"] == "Кадри")
 check("лок усередині теки значка НЕ дає (і це не помилка)",
@@ -321,15 +333,38 @@ check("теки самі в список на лок не входять",
 
 print()
 print("=" * 64)
-print("10. Провідник відступає, поки триває передача")
+print("10. Посеред передачі ходити можна — але svn не смикаємо")
 print("=" * 64)
+# Раніше провідник посеред передачі відмовляв зовсім: кожна тека йшла на
+# сервер. Тепер тека читається з диска й останньої синхронізації, тож ходити
+# проєктом можна й під час годинного завантаження. Чого не можна — питати svn
+# поруч зі svn, що пише: той упирається в замок копії, і _run кинувся б її
+# «лагодити» посеред чужої операції. Доводимо: під час передачі svn не
+# запускається взагалі.
+calls = []
+real_run = sc._run
+
+
+def spy(args, **kw):
+    calls.append(args[0] if args else "?")
+    return real_run(args, **kw)
+
+
+sc._run = spy
 api.busy.set()
-for fn, args in (("browse", ("",)), ("file_details", ("readme.txt",))):
-    try:
-        getattr(api, fn)(*args)
-        check("%s відступає під час передачі" % fn, False, "пройшло")
-    except sc.SvnError as e:
-        check("%s відступає під час передачі" % fn, "Please wait" in str(e), e)
+try:
+    d = api.browse("Кадри")
+    check("посеред передачі тека відкривається",
+          any(e["name"] == "сцена міста.blend" for e in d["entries"]),
+          [e["name"] for e in d["entries"]])
+    check("…і svn при цьому не запускався", calls == [], calls)
+finally:
+    sc._run = real_run
+try:
+    api.file_details("readme.txt")
+    check("file_details відступає під час передачі", False, "пройшло")
+except sc.SvnError as e:
+    check("file_details відступає під час передачі", "Please wait" in str(e), e)
 api.busy.clear()
 
 print()

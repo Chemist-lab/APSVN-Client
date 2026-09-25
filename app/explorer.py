@@ -1,21 +1,30 @@
 # -*- coding: utf-8 -*-
 """Провідник проєкту: вміст однієї теки з усім, що про неї знає svn.
 
-Дані беремо ЛІНИВО, по одній теці. Заміри на копії з 2000 файлів:
-`status -u -v --depth immediates` на ОДНУ теку — 24 КБ і 0.045 с, тоді як на
-все дерево — 505 КБ і 0.072 с. За часом різниця мала, за обсягом — у 21 раз,
-а розбирати півмегабайта XML щоразу, коли людина клікнула теку, немає сенсу.
+ТЕКА ЧИТАЄТЬСЯ БЕЗ МЕРЕЖІ. Раніше кожен клік по теці йшов на сервер
+(`status -u -v --depth immediates` і ще два `svn info` для значка «нове
+всередині»), і навігація була рівно такою швидкою, як мережа: «Reading
+folder…», порожній список, миготіння. Тепер тека складається з трьох джерел:
 
-Що звідти видно (перевірено на двох робочих копіях і чужому локу):
+  * диск (scandir) — що фізично лежить у теці, з розмірами й датами;
+  * локальний `svn status --depth immediates` цієї теки — без -u, тобто без
+    мережі: свої зміни, свої локи, нове, перенесене, конфлікти. Це те, що
+    людина могла змінити секунду тому, тому питаємо щоразу — соті частки
+    секунди;
+  * ОСТАННЯ СИНХРОНІЗАЦІЯ (список, який state() тягне з сервера кожні 10 с):
+    чужі локи, що нового на сервері, що ще не завантажено, «нове всередині».
+
+Тобто сервер питається раз на синхронізацію для всього проєкту, а не на
+кожен клік. Чуже з'являється в провіднику з тією ж затримкою, що й у списку
+змін, — і це чесно: провідник показує проєкт станом на останню звірку.
+
+Що видно із синхронізації (перевірено на двох робочих копіях і чужому локу):
   * чужий лок          -> repos-status/lock/owner, навіть якщо файл не змінено;
-  * власний лок        -> wc-status/lock, видно й без мережі;
   * новіше на сервері  -> repos-status item="modified";
-  * є на сервері, немає на диску -> wc-status "none" + repos-status "added";
-  * відсутній <repos-status> у режимі -v означає «і лока немає, і новин немає».
+  * є на сервері, немає на диску -> wc-status "none" + repos-status "added".
 
-Чого звідти дістати НЕ можна — значка «всередині цієї теки щось нове». Його
-доводиться рахувати окремо, бо last-changed ревізія теки в svn підіймається
-з піддерева, а локи — ні (вони не створюють ревізій).
+«Нове всередині» для теки — будь-яка зміна з сервера під нею. Локи ревізій не
+створюють, тож і значка не дають — це навмисно.
 """
 import datetime
 import os
@@ -51,75 +60,88 @@ def _when(ts):
         return ""
 
 
-def _dir_revisions(cwd, username, password):
-    """Ревізії підтек: та, що в нас, і та, що на сервері."""
-    def grab(args):
-        out = {}
-        try:
-            root = sc._xml(args, cwd=cwd, username=username, password=password,
-                           timeout=120, _retry=False)
-        except (sc.SvnError, ET.ParseError):
-            return out
-        for e in root.findall("entry"):
-            p = (e.get("path") or "").replace("\\", "/")
-            c = e.find("commit")
-            if p and p != "." and c is not None:
-                out[p.split("/")[-1]] = c.get("revision")
-        return out
+def _local_view(full):
+    """Що svn знає про записи теки — ЛОКАЛЬНО, без мережі, за іменем.
 
-    here = grab(["info", ".", "--depth", "immediates"])
-    head = grab(["info", ".", "-r", "HEAD", "--depth", "immediates"])
-    return here, head
-
-
-def _svn_view(full, remote, username, password):
-    """Стан кожного запису теки очима svn, за іменем."""
-    by_name = {}
-    args = ["status", ".", "-v", "--depth", "immediates"]
-    if remote:
-        args.insert(2, "-u")
+    _retry=False навмисно: авто-cleanup у _run посеред чужої операції (іде
+    оновлення, коміт) заважав би їй. Провідник — операція читання: не вийшло —
+    мовчки обходимося останньою синхронізацією. None — теку svn не читає
+    (наприклад, вона сама ще не під версійним контролем).
+    """
     try:
-        # _retry=False навмисно: авто-cleanup у _run під час чужого коміту
-        # заважав би йому. Провідник — операція читання, він мовчки відступає.
-        root = sc._xml(args, cwd=full, timeout=None if remote else 120,
-                       username=username if remote else None,
-                       password=password if remote else None, _retry=False)
-    except (sc.SvnError, ET.ParseError):
-        return by_name             # неверсіонована тека — це не збій
+        root = sc._xml(["status", ".", "--depth", "immediates"], cwd=full,
+                       timeout=60, _retry=False)
+    except (sc.SvnError, ET.ParseError, OSError):
+        return None
+    out = {}
     for tgt in root.findall("target"):
         for e in tgt.findall("entry"):
             raw = (e.get("path") or "").replace("\\", "/")
             if not raw or raw == ".":
                 continue
-            name = raw.split("/")[-1]
-            ws, rs = e.find("wc-status"), e.find("repos-status")
-            wl = ws.find("lock") if ws is not None else None
-            rl = rs.find("lock") if rs is not None else None
-            if remote:
-                owner = rl.findtext("owner") if rl is not None else None
-                same = (rl is not None and wl is not None and
-                        rl.findtext("token") == wl.findtext("token"))
-                mine, stale = bool(same), bool(wl is not None and not same)
-            else:
-                owner = wl.findtext("owner") if wl is not None else None
-                mine, stale = wl is not None, False
-            by_name[name] = {
-                "status": ws.get("item") if ws is not None else "none",
-                "remote_change": bool(rs is not None and
-                                      rs.get("item") not in (None, "none")),
-                "lock_owner": owner, "lock_mine": mine, "lock_stale": stale,
+            ws = e.find("wc-status")
+            if ws is None:
+                continue
+            wl = ws.find("lock")
+            conflicted = (ws.get("item") == "conflicted"
+                          or ws.get("tree-conflicted") == "true"
+                          or ws.get("props") == "conflicted")
+            out[raw.split("/")[-1]] = {
+                "status": "conflicted" if conflicted else ws.get("item"),
+                "token": wl is not None,
+                "owner": wl.findtext("owner") if wl is not None else None,
+                "moved_from": sc._rel(ws.get("moved-from") or "") or None,
             }
-    return by_name
+    return out
 
 
-def browse(wc, rel="", username=None, password=None, remote=True):
-    """Вміст ОДНІЄЇ теки: усе, що є на диску, плюс те, що знає про неї svn."""
+# Стани, які означають «тут є твоя нездана робота».
+LOCAL = ("modified", "added", "deleted", "missing", "unversioned",
+         "replaced", "conflicted")
+
+
+def browse(wc, rel="", username=None, password=None, remote=True, known=None,
+           local=True):
+    """Вміст ОДНІЄЇ теки: диск + локальний svn + остання синхронізація.
+
+    known — список файлів з останнього state() (там чужі локи й те, що їде з
+    сервера). Якщо його не дали, читаємо самі, з мережею, — так кличуть тести
+    і так було раніше. local=False — не питати svn зовсім (іде передача: svn
+    поруч зі svn на тій самій копії впирається в її замок).
+    """
     rel = (rel or "").strip("/").replace("\\", "/")
     full = inside(wc, rel)
     if not os.path.isdir(full):
         raise sc.SvnError("That folder is no longer there.")
+    if known is None:
+        try:
+            known = sc.status(wc, remote=remote, username=username,
+                              password=password)
+        except sc.SvnError:
+            known = []
+    kn = {k["path"]: k for k in known}
+    here = _local_view(full) if local else None
 
-    seen = _svn_view(full, remote, username, password)
+    # Усередині невідомої svn теки невідоме все: svn status показує лише саму
+    # теку одним рядком, а її вміст — ні.
+    loose = any(rel == k["path"] or rel.startswith(k["path"] + "/")
+                for k in known if k.get("status") == "unversioned")
+
+    def lock_of(path, li):
+        """(власник, мій, забраний). Свій токен видно локально й одразу —
+        щойно взятий лок з'являється без синхронізації; чужий лок і «твій
+        забрали» знає лише синхронізація."""
+        ki = kn.get(path) or {}
+        tok = (li["token"] if li is not None
+               else bool(ki.get("lock_mine") or ki.get("lock_stale")))
+        if tok:
+            stale = bool(ki.get("lock_stale"))
+            return ((li or {}).get("owner") or ki.get("lock_owner"),
+                    not stale, stale)
+        if ki.get("lock_owner") and not ki.get("lock_mine"):
+            return ki["lock_owner"], False, False
+        return None, False, False
+
     dirs, files, cut = [], [], False
     try:
         raw = sorted(os.scandir(full), key=lambda e: e.name.lower())
@@ -137,20 +159,31 @@ def browse(wc, rel="", username=None, password=None, remote=True):
             stt = e.stat(follow_symlinks=False)
         except OSError:
             continue
+        path = (rel + "/" + e.name) if rel else e.name
+        li = here.get(e.name) if here is not None else None
+        ki = kn.get(path) or {}
+        if loose:
+            st = "unversioned"
+        elif li is not None:
+            st = li["status"]
+        elif here is not None:
+            st = "normal"            # svn про запис змовчав — отже, нічого нового
+        else:
+            st = ki.get("status") or "normal"
+        owner, mine, stale = lock_of(path, li)
         low = e.name.lower()
-        si = seen.pop(e.name, {})
-        st = si.get("status", "unversioned")
+        moved_from = (li or {}).get("moved_from") or ki.get("moved_from")
         row = {
-            "name": e.name,
-            "path": (rel + "/" + e.name) if rel else e.name,
+            "name": e.name, "path": path,
             "kind": "dir" if is_dir else "file",
             "size": None if is_dir else stt.st_size,
             "mtime": _when(stt.st_mtime), "link": bool(link), "on_disk": True,
-            "status": st, "status_text": sc.STATUS_TEXT.get(st, st),
-            "remote_change": si.get("remote_change", False),
-            "lock_owner": si.get("lock_owner"),
-            "lock_mine": si.get("lock_mine", False),
-            "lock_stale": si.get("lock_stale", False),
+            "status": st,
+            "status_text": ("moved here" if moved_from and st == "added"
+                            else sc.STATUS_TEXT.get(st, st)),
+            "remote_change": bool(ki.get("remote_change")),
+            "lock_owner": owner, "lock_mine": mine, "lock_stale": stale,
+            "moved_from": moved_from,
             "binary": low.endswith(sc.BINARY_EXT),
             "openable": low.endswith(OPENABLE),
             "nested": is_dir and os.path.isdir(os.path.join(e.path, ".svn")),
@@ -161,26 +194,34 @@ def browse(wc, rel="", username=None, password=None, remote=True):
             break
 
     # Є на сервері, але ще не завантажене. Без цього рядка людина такий файл
-    # не побачить узагалі й вважатиме, що його немає.
-    for name, si in seen.items():
-        if si.get("status") in ("none", "deleted") or si.get("remote_change"):
+    # не побачить узагалі й вважатиме, що його немає. Видалене й перенесене
+    # звідси НЕ показуємо: на диску його вже немає, а в «Changes» воно є.
+    shown = {r["name"] for r in dirs + files}
+    for k in known:
+        parent, _, name = k["path"].rpartition("/")
+        if parent != rel or not name or name in shown:
+            continue
+        if k.get("status") == "none" and k.get("remote_change"):
             files.append({
-                "name": name, "path": (rel + "/" + name) if rel else name,
-                "kind": "file", "size": None, "mtime": "", "link": False,
-                "on_disk": False, "status": si.get("status", "none"),
+                "name": name, "path": k["path"], "kind": "file", "size": None,
+                "mtime": "", "link": False, "on_disk": False, "status": "none",
                 "status_text": "not downloaded yet", "remote_change": True,
-                "lock_owner": si.get("lock_owner"),
-                "lock_mine": si.get("lock_mine", False),
-                "lock_stale": si.get("lock_stale", False),
+                "lock_owner": k.get("lock_owner"),
+                "lock_mine": bool(k.get("lock_mine")),
+                "lock_stale": bool(k.get("lock_stale")),
+                "moved_from": None,
                 "binary": name.lower().endswith(sc.BINARY_EXT),
                 "openable": False, "nested": False,
             })
 
-    if dirs and remote:
-        here, head = _dir_revisions(full, username, password)
-        for d in dirs:
-            a, b = here.get(d["name"]), head.get(d["name"])
-            d["new_inside"] = bool(a and b and a != b)
+    # «Нове всередині» і «твоя нездана робота всередині» — з уже відомого
+    # списку, без жодного запиту.
+    for d in dirs:
+        pre = d["path"] + "/"
+        d["new_inside"] = any(k.get("remote_change") and k["path"].startswith(pre)
+                              for k in known)
+        d["mine_inside"] = any(k.get("status") in LOCAL and k["path"].startswith(pre)
+                               for k in known)
 
     return {"path": rel,
             "parent": (rel.rsplit("/", 1)[0] if "/" in rel

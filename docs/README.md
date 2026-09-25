@@ -103,14 +103,41 @@ copies**.
 ### The Explorer
 
 The **Explorer** tab shows the project the way a file manager would: folders,
-sizes, dates. It reads one folder at a time, on demand — on a copy with 2000
-files that is 24 KB instead of 505 KB, so it stays quick no matter how large
-the project grows.
+sizes, dates. Opening a folder costs **no network at all**: it is read from the
+disk, from a quick local `svn status` of that one folder, and from the last
+check with the server — the one APSVN makes every 10 seconds anyway. So a
+folder opens instantly, a folder you have already seen opens from memory, and
+when fresh data arrives the rows that did not change stay exactly where they
+are: nothing blinks, the scroll position stays, the row under the mouse keeps
+its highlight. Your own actions (a lock, a move, a file you just saved) show
+up at once; a colleague's show up with the next check, the same as in
+*Changes*. You can browse even while a big transfer is running.
+
+* **◀ ▶ ▲** — back, forward, one folder up (also Alt+←, Alt+→, Backspace).
+* Click selects, **Ctrl**-click adds, **Shift**-click selects a range, Ctrl+A
+  selects everything; ↑ ↓ move, Enter opens.
+* **Right-click** — open, show in folder, copy path, history, lock or release,
+  lock everything inside a folder, the file's page on the studio website.
+* **📋 Copy path** (also Ctrl+C) — the full path on this computer, one per
+  line for several files: paste it straight into Blender's file browser.
+* **Drag onto a folder** — in the list, in the tree, onto the path at the top
+  or onto `..` — to **move** it there. It is a real `svn move`: the history
+  goes with the file and the server moves its task with it. Nothing reaches
+  the server until you submit; the move shows up in *Changes* as one row —
+  *moved here · from Shots/* — with **↶ Move back**, which puts it back as if
+  nothing happened (anything you changed in the file since stays).
+* **Drag out of the window — into Blender, onto the desktop, into Explorer**
+  (Windows). The real file is handed over, so Blender opens it, links it or
+  appends from it the same way as when you drop it from Explorer. Outside
+  APSVN the file is only ever **copied**, never taken away from the project.
+
+APSVN asks before a move only when there is something to say: a folder (all
+of it goes), scenes that point at the file and would open without it, or a
+file assigned to somebody else.
 
 On the left is a folder tree — click a triangle to expand, click a name to go
 there. A blue dot next to a folder means somebody submitted something inside
-it. Subfolders are read only when you actually open them, so a project with
-thousands of files costs nothing until you look.
+it; an orange one — you have unsubmitted work in there.
 
 Every row says what svn knows about it: who holds the lock, whether there is
 something newer on the server, and whether the file has been downloaded at all.
@@ -120,7 +147,9 @@ only visible on the file itself.)
 
 ### Locking a whole folder
 
-Every folder row has **🔓 lock folder**. Subversion has no such thing as a lock
+A folder row shows **🔓 lock folder** when you point at it or select it (it is
+also in the right-click menu and in the folder's side panel). Subversion has
+no such thing as a lock
 on a folder — locks only exist for files — so APSVN locks every file inside it,
 subfolders included. The dialog shows real numbers taken from the server before
 anything happens: how many files are in there, how many are already yours, and
@@ -334,7 +363,7 @@ part of the root, with the code in `Resources/app`.
 | `explorer.py`   | the Explorer: one folder at a time |
 | `blendthumb.py` | preview embedded in a `.blend` |
 | `imgthumb.py`   | previews for png/jpg/tga/exr |
-| `tests/`        | 586 checks without a server, 21 more (read-only) against the real one |
+| `tests/`        | 642 checks without a server, 21 more (read-only) against the real one |
 
 Settings live in `%APPDATA%\APSVN\config.json`, format 2:
 `{"format":2, "projects":[…], "current":"<id>", …mirror of the current one…}`.
@@ -625,6 +654,73 @@ behind decisions that look odd until you know why.
   called by nothing. Bringing the screen back is a dozen lines in `ui/app.js`;
   deleting them now would mean writing the same thing twice. There is a comment
   above them saying so, because dead-looking code invites tidying.
+* **The Explorer reads no network when you click.** It used to ask the
+  server for every folder (`status -u -v --depth immediates`, plus two
+  `svn info` calls for the “new inside” badge), so navigating was exactly as
+  fast as the network: *Reading folder…*, an empty list, a blink. Now a folder
+  is the disk, a local `svn status --depth immediates` of that folder
+  (hundredths of a second), and the list from the last check with the server
+  — which `state()` fetches for the whole project every 10 seconds anyway.
+  One network round per check instead of one per click. What that costs is
+  honest and small: a colleague's new lock appears in the Explorer with the
+  same delay as in *Changes*. Your own lock appears at once, because it comes
+  from the local status. While a transfer runs, the local status is skipped
+  too (svn beside svn on the same copy hits its lock, and `_run` would try to
+  *repair* it mid-operation); the folder still opens.
+* **Rows are keyed, the list is swapped in one go.** The same reconciling as
+  in *Changes*: a row whose data did not change survives a refresh as the same
+  DOM node. Selection is drawn with classes on the existing rows rather than
+  by rebuilding them. A folder already seen is painted from memory at once and
+  corrected when the fresh answer arrives; an answer that arrives after the
+  artist has already moved on is thrown away.
+* **Moving is `svn move`, and both halves travel together.** svn records a
+  move as two entries — the new place (`moved-from`) and the old
+  (`moved-to`) — and refuses to commit one without the other (E200009,
+  *both sides of the move must be committed together*, `tests/exp_move.py`).
+  The artist sees one row; `do_commit` adds the other half. `move` accepts no
+  `--targets`, so paths go in argv as 8.3 aliases, which svn expands back to
+  the real Cyrillic names — both ends exist on disk (we move INTO an existing
+  folder, keeping the name), so an alias always exists. A folder svn does not
+  know yet is added with `--depth empty` first: moving into it fails
+  otherwise (E155010), and its other contents are nobody's business.
+* **A moved file whose name no code page can hold still commits.** The
+  old place has to be named in `--targets`, and the file is no longer there,
+  so there is no 8.3 alias. An empty placeholder brings the alias back — the
+  same trick `remove()` uses — and is removed after the commit.
+* **Moving back is a true undo.** svn recognises a move back to where the
+  file came from and the status becomes clean, as if nothing had happened;
+  edits made after the move stay in the file. That is **↶ Move back**.
+* **“I moved it, a colleague changed it meanwhile” is its own conflict —
+  and the usual button would have eaten their work.** The tree conflict lands
+  on the old place. `--accept working` (our *keep my file* for tree
+  conflicts) marks it resolved and **silently drops the colleague's change**;
+  committing the move then deletes the old place, their work included, from
+  the server too. `--accept mine-conflict` carries their change into the file
+  at the new place. Found by experiment, pinned by `tests/test_move.py`, which
+  checks the colleague's bytes end up in the repository. The other way out,
+  *put it back*, reverts both halves — and takes the safety copy of the new
+  place **first**, because reverting the new half deletes the file together
+  with anything edited after the move. The first version took the copy after
+  the revert; the test found an empty *Safety copies* folder.
+* **Dragging out is Windows' own drag, with two guards.** The pywebview
+  window is a WinForms form, so dragging real files out of it is the ordinary
+  `DoDragDrop` with `CF_HDROP` — exactly what Explorer offers Blender. The
+  effects allowed are **Copy and Link, never Move**: for `CF_HDROP` the
+  receiver does the moving, and Explorer on the same drive would take the file
+  out of the working copy behind svn's back. And the drag is **not started if
+  the mouse button is already up** by the time the request crosses the
+  bridge: OLE then does not cancel, it *drops* — wherever the cursor happens
+  to be. Rows are not HTML-draggable on Windows, or the web view would start
+  its own drag that has nothing to give Blender. Off Windows the page's own
+  drag moves files between folders; dragging into Blender needs an AppKit
+  drag session with the mouse event in hand, which the bridge no longer has
+  — attempting it blind, without a Mac to try it on, risked crashing the app.
+* **A file dropped on the window from outside must not replace the app.**
+  A web view opens whatever is dropped on it. The page refuses drops
+  everywhere except on its own folders.
+* **The clipboard goes through the system, not `navigator.clipboard`.** The
+  web one wants document focus and permission, and fails silently exactly
+  when a menu item was clicked and the menu has already closed.
 * **The launcher is distlib's, not PyInstaller's.** PyInstaller would give a
   7 MB exe — a whole Python inside a wrapper whose only job is to hand over
   control, a third of the weight of the program itself — and antivirus
@@ -859,7 +955,7 @@ decision, not a gap.
 
 ### Tests
 
-Without a server — 586 checks against a temporary `file://` repository (and,
+Without a server — 642 checks against a temporary `file://` repository (and,
 for the studio server, a fake one on `127.0.0.1`); they leave nothing behind:
 
 ```bash
@@ -896,6 +992,12 @@ runtime\python.exe tests\test_apsvn.py
   Windows does not know), folders, junk input, the cache;
 * `test_incoming.py` — what “Get latest” will bring: your own commit does
   not make you “behind”, a colleague's additions, edits and deletions do.
+* `test_move.py` — moving: one row for the artist and both halves for svn,
+  a U+02BC name, `@` in a name, moving back, into a folder svn does not know
+  yet, a whole folder, a file somebody else holds, a file you hold, the
+  colleague who changed the file while you were moving it (their bytes must
+  end up on the server), the Explorer without network, the drag guard with
+  the mouse button up, and copying a path;
 * `test_server.py` — the studio server, against a fake one answering in the
   same shapes as the real `api_app.py`: where the API is looked for, paths in
   a copy taken from `/trunk`, which tasks cover a file (and that `sh01` does
@@ -918,6 +1020,8 @@ runtime\python.exe tests\test_live.py
 `test_live_write.py` runs a full cycle that writes to the repository and cleans
 up after itself; enable it deliberately with `set APSVN_LIVE_WRITE=1`.
 
-Experiments (not tests — run them if you ever touch encodings, deletion or
-progress): `exp_encoding.py` — what `svn.exe` actually accepts on this machine;
-`exp_delete.py` — why deletion needs `--keep-local`.
+Experiments (not tests — run them if you ever touch encodings, deletion,
+moving or progress): `exp_encoding.py` — what `svn.exe` actually accepts on
+this machine; `exp_delete.py` — why deletion needs `--keep-local`;
+`exp_move.py` — what `svn status` says about a move, that its halves only
+commit together, the placeholder for an unrepresentable name, moving back.

@@ -344,6 +344,7 @@ async function _refresh(mine) {
     taskSel = null; taskDone = null;
     THUMBS.clear();
     renderTaskBadge();
+    resetExplorer();
     if (s.configured) initServer();
   }
 
@@ -395,6 +396,10 @@ async function _refresh(mine) {
   } else {
     syncBar();
   }
+  // Провідник показує проєкт станом на останню синхронізацію — отже, щойно
+  // вона оновилась, оновлюється й поточна тека. Локально, без мережі, а
+  // незмінені рядки лишаються тими самими вузлами.
+  if (view === "browse") refreshDir();
 }
 
 // Сервер відповів «проєкт переїхав». Нову адресу пропонує САМ сервер, тож
@@ -582,13 +587,27 @@ function reconcile(box, items) {
   box.scrollTop = top;                // replaceChildren скидає прокрутку
 }
 
+// Перенос — це ДВА записи svn: нове місце (moved here) і старе (moved away).
+// Людина робила одну дію, тож і бачить один рядок — нове місце; старе їде
+// разом із ним при здачі (do_commit додає його сам). Винятки — конфлікт на
+// старому місці: його треба бачити, бо там і вирішують.
+const hiddenHalf = f => !!(f.moved_to && f.status !== "conflicted");
+
+// Нове місце не здається, поки старе в конфлікті: svn відмовить.
+function blockedMove(f, files) {
+  return !!(f.moved_from && files.some(
+    x => x.path === f.moved_from && x.status === "conflicted"));
+}
+
 function renderFiles() {
   const box = $("files");
-  const files = (st && st.files) || [];
+  const all = (st && st.files) || [];
+  const files = all.filter(f => !hiddenHalf(f));
 
   // прибираємо з вибору те, чого вже немає або що не можна здавати
   const live = new Set(files
-    .filter(f => f.status !== "conflicted" && !(f.lock_owner && !f.lock_mine))
+    .filter(f => f.status !== "conflicted" && !(f.lock_owner && !f.lock_mine)
+                 && !blockedMove(f, all))
     .map(f => f.path));
   liveSet = live;                       // «виділити все» працює по верхньому рівню
   // Файли всередині кинутих тек у liveSet не входять (інакше лічильник рахував
@@ -637,7 +656,8 @@ function renderFiles() {
 }
 
 function fileRow(f) {
-    const blocked = f.status === "conflicted" || !!(f.lock_owner && !f.lock_mine);
+    const blocked = f.status === "conflicted" || !!(f.lock_owner && !f.lock_mine)
+                    || blockedMove(f, (st && st.files) || []);
     const row = document.createElement("div");
     row.className = "f" + (f.status === "conflicted" ? " conflict" : "");
 
@@ -670,6 +690,13 @@ function fileRow(f) {
     row.append(cb, iconEl("fico", f.path, f.dir, f.dir ? "📁" : "📄"), p);
 
     if (f.status_text) row.append(chip(f.status_text, f.status));
+    if (f.moved_from && f.status !== "conflicted") {
+      const from = chip("from " + (parentOf(f.moved_from) || "the project root") + "/",
+                        "moved");
+      from.title = "moved from " + f.moved_from + " — it goes to the server as a move, " +
+                   "with its history";
+      row.append(from);
+    }
     if (f.remote_change) row.append(chip("newer on the server", "remote"));
     const tc = taskChip(f.path);
     if (tc) row.append(tc);
@@ -679,7 +706,40 @@ function fileRow(f) {
                       (f.bytes ? " · " + fmtSize(f.bytes) : "")));
     }
 
-    if (f.status === "conflicted") {
+    if (f.status === "conflicted" && f.conflict_kind === "moved") {
+      // Ти переніс файл, а колега тим часом його змінив. «Лишити мій
+      // перенос» тут безпечне: зміна колеги їде у файл на новому місці
+      // (svn resolve --accept mine-conflict, перевірено дослідом). Звичне
+      // «keep my file» (--accept working) її б мовчки викинуло.
+      const dest = f.moved_to || "";
+      row.append(mini("keep my move", "", () => {
+        ask({
+          title: "Keep your move?",
+          lines: ["You moved “" + baseOf(f.path) + "” to “" +
+                  (parentOf(dest) || "the project root") + "”, and meanwhile a " +
+                  "colleague changed it.",
+                  "Their change goes into the file at its new place — nothing of " +
+                  "theirs is lost. You still have to submit the move."],
+          ok: "Keep my move",
+        }).then(a => {
+          if (a.ok) act("do_resolve", [[f.path], true, "mine"],
+                        "Bringing their change to the new place…");
+        });
+      }));
+      row.append(mini("put it back", "danger", () => {
+        ask({
+          title: "Undo your move?",
+          lines: ["“" + baseOf(f.path) + "” goes back to “" +
+                  (parentOf(f.path) || "the project root") + "” — with your " +
+                  "colleague’s change.",
+                  "Your copy from the new place goes to “Safety copies” first."],
+          ok: "Put it back", danger: true,
+        }).then(a => {
+          if (a.ok) act("do_resolve", [[f.path], false, "theirs"],
+                        "Putting it back…");
+        });
+      }));
+    } else if (f.status === "conflicted") {
       const k = f.conflict_kind || "text";
       const moved = k === "tree" || k === "obstructed";
       // Кожен вид конфлікту вимагає СВОЇХ слів: «взяти версію колеги» на
@@ -753,6 +813,13 @@ function fileRow(f) {
         }));
       }
     } else {
+      if (f.moved_from && !blockedMove(f, (st && st.files) || [])) {
+        // Повернення — справжнє «скасувати»: svn упізнає його, і статус
+        // стає чистим; зміни, зроблені після переносу, лишаються у файлі.
+        // Коли старе місце в конфлікті, повертати нікуди — вирішують там.
+        row.append(mini("↶ Move back", "", () =>
+          act("move_back", [f.path], "Moving it back…")));
+      }
       if (f.status === "modified" || f.status === "missing") {
         row.append(mini("✖ Discard my changes", "danger", () => {
           ask({
@@ -766,7 +833,10 @@ function fileRow(f) {
           });
         }));
       }
-      if (!f.dir) {                        // теку не займають — займають файли
+      // Теку не займають — займають файли. І лише ті, що вже є на сервері:
+      // новий чи щойно перенесений файл svn зайняти не дасть (його там ще
+      // немає), тож кнопка лише відмовляла б.
+      if (!f.dir && f.status !== "added" && f.status !== "unversioned") {
         const lb = document.createElement("button");
         lb.className = "lockbtn";
         if (f.lock_stale) {
@@ -1039,37 +1109,83 @@ function restore(r) {
   });
 }
 
-/* --- провідник проєкту -------------------------------------------------- */
-// Дані тягнемо по одній теці, на вимогу: на копії з 2000 файлів це 24 КБ
-// замість 505 КБ. Список НЕ перемальовується за таймером — інакше рядки
-// пересортувалися б просто під курсором і клік потрапив би не в той файл.
+/* --- провідник проєкту --------------------------------------------------
+   Тека приходить БЕЗ мережі (див. explorer.py): диск + локальний svn +
+   остання синхронізація. Тому навігація миттєва, а перемальовування —
+   ключоване, як у списку змін: рядок із тими самими даними переживає
+   оновлення тим самим вузлом, і нічого не блимає. Уже бачену теку показуємо
+   з пам'яті одразу, а свіжу відповідь накладаємо поверх, коли приїде. */
 
-let brPath = "", brSel = null, brBusy = false;
-let brDir = null;                 // остання намальована тека — щоб перемалювати
-                                  // її, коли доїдуть іконки
+let brPath = "", brSel = null;
+let brDir = null;                 // остання намальована тека
+let brPainted = null;             // яку теку малювали — щоб знати, чи гортати вгору
+const brCache = new Map();        // тека -> її останній вміст
+let brNav = 0;                    // номер запиту: запізнілі відповіді — за борт
+const brBack = [], brFwd = [];    // назад / вперед, як у будь-якому провіднику
+const brPick = new Set();         // вибрані рядки (Ctrl, Shift)
+let brAnchor = null;              // від чого рахувати Shift-діапазон
+let brSelSig = null;              // з якими даними малювали бічну панель
 // дерево: які теки розгорнуті і що всередині кожної (кешуємо, бо той
 // самий browse уже приніс список підтек — другий запит зайвий)
 const treeOpen = new Set([""]);
 let treeKids = {};
 
-async function openDir(path) {
-  if (brBusy) return;
-  brBusy = true;
-  const box = $("br-list");
-  box.innerHTML = "<div class='empty'>Reading folder…</div>";
+function resetExplorer() {
+  brPath = ""; brSel = null; brDir = null; brPainted = null; brSelSig = null;
+  brCache.clear(); brBack.length = 0; brFwd.length = 0;
+  brPick.clear(); brAnchor = null;
+  treeKids = {}; treeOpen.clear(); treeOpen.add("");
+}
+
+const brEntry = p => (brDir && brDir.entries.find(e => e.path === p)) || null;
+const parentOf = p => p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "";
+const baseOf = p => p.slice(p.lastIndexOf("/") + 1);
+
+async function openDir(path, how) {
+  how = how || {};
+  const mine = ++brNav;
+  const moving = path !== brPath || !brDir;
+  if (moving && brDir && !how.history) {
+    brBack.push(brPath);
+    brFwd.length = 0;
+  }
+  if (moving) {
+    brPath = path;
+    brPick.clear(); brSel = null; brAnchor = null; brSelSig = null;
+    sideEmpty();
+    const cached = brCache.get(path);
+    if (cached) paintDir(cached);            // миттєво — з пам'яті
+    else $("br-list").classList.add("loading");
+  }
   let d;
   try {
     d = await api().browse(path);
   } catch (e) {
-    box.innerHTML = "";
-    brBusy = false;
+    if (mine !== brNav) return;
+    $("br-list").classList.remove("loading");
+    brCache.delete(path);
+    // Теки не стало (перенесли, видалили) — не лишаємо людину в порожнечі,
+    // а піднімаємося до того, що існує.
+    if (path) {
+      toast(clean(e), 6000);
+      return openDir(parentOf(path), { history: true });
+    }
     return toast(clean(e), 8000);
   }
-  brBusy = false;
-  brPath = d.path;
-  brSel = null;
+  if (mine !== brNav) return;                // людина вже відкрила іншу
+  $("br-list").classList.remove("loading");
+  brCache.set(d.path, d);
+  paintDir(d);
+}
+
+// Оновити поточну теку на місці: після синхронізації, дії, приїзду іконок.
+function refreshDir() {
+  if (view === "browse" && brDir) return openDir(brPath, { history: true });
+}
+
+function paintDir(d) {
+  brDir = d;
   treeKids[d.path] = d.entries.filter(e => e.kind === "dir" && !e.link);
-  // шлях до поточної теки розгортаємо, щоб її було видно в дереві
   let acc = "";
   treeOpen.add("");
   for (const part of (d.path ? d.path.split("/") : [])) {
@@ -1079,7 +1195,41 @@ async function openDir(path) {
   renderCrumbs(d);
   renderDir(d);
   renderTree();
-  sideEmpty();
+  syncNav();
+  if (brPainted !== d.path) $("br-list").scrollTop = 0;   // нова тека — з початку
+  brPainted = d.path;
+  // Вибране могло змінитися (лок узяли, файл зник). Бічну панель
+  // перемальовуємо лише тоді — не щоразу, інакше вона блимала б щоопитування.
+  for (const p of [...brPick]) if (!brEntry(p)) brPick.delete(p);
+  if (brSel && !brEntry(brSel)) brSel = [...brPick].pop() || null;
+  if (brPick.size > 1) renderMulti();
+  else if (!brSel) { if (brSelSig) { brSelSig = null; sideEmpty(); } }
+  else if (JSON.stringify(brEntry(brSel)) !== brSelSig) showSide(brEntry(brSel));
+  syncPick();
+}
+
+$("br-back").onclick = () => goBack();
+$("br-fwd").onclick = () => goFwd();
+$("br-up").onclick = () => goUp();
+
+function syncNav() {
+  $("br-back").disabled = !brBack.length;
+  $("br-fwd").disabled = !brFwd.length;
+  $("br-up").disabled = !brDir || brDir.parent === null;
+}
+
+function goBack() {
+  if (!brBack.length) return;
+  brFwd.push(brPath);
+  openDir(brBack.pop(), { history: true });
+}
+function goFwd() {
+  if (!brFwd.length) return;
+  brBack.push(brPath);
+  openDir(brFwd.pop(), { history: true });
+}
+function goUp() {
+  if (brDir && brDir.parent !== null) openDir(brDir.parent);
 }
 
 /* --- дерево тек ---------------------------------------------------------- */
@@ -1095,6 +1245,7 @@ async function treeToggle(path) {
     renderTree();                       // одразу показуємо «читаю…»
     try {
       const d = await api().browse(path);
+      brCache.set(d.path, d);
       treeKids[path] = d.entries.filter(e => e.kind === "dir" && !e.link);
     } catch (e) {
       treeOpen.delete(path);
@@ -1105,11 +1256,9 @@ async function treeToggle(path) {
   renderTree();
 }
 
-function treeNode(item, depth) {
+function treeRow(item, depth) {
   const path = item ? item.path : "";
   const open = treeOpen.has(path);
-  const kids = treeKids[path];
-
   const row = document.createElement("div");
   row.className = "tn" + (path === brPath ? " on" : "");
   row.style.paddingLeft = (6 + depth * 13) + "px";
@@ -1125,34 +1274,49 @@ function treeNode(item, depth) {
   ic.textContent = item ? (item.nested ? "📦" : (open ? "📂" : "📁")) : "🗂";
   const lb = document.createElement("span");
   lb.className = "tl";
-  lb.textContent = item ? item.name : (st.name || "project");
+  lb.textContent = item ? item.name : ((st && st.name) || "project");
   row.append(ic, lb);
   if (item && item.new_inside) {
     const d = document.createElement("span");
     d.className = "dot"; d.title = "somebody submitted something in here";
     row.append(d);
   }
-  row.onclick = () => { if (path !== brPath) openDir(path); };
-
-  const box = document.createDocumentFragment();
-  box.append(row);
-  if (open) {
-    if (!kids) {
-      const w = document.createElement("div");
-      w.className = "tn"; w.style.paddingLeft = (6 + (depth + 1) * 13) + "px";
-      w.innerHTML = "<span class='tw empty'></span><span class='tl dim'>reading…</span>";
-      box.append(w);
-    } else {
-      for (const k of kids) box.append(treeNode(k, depth + 1));
-    }
+  if (item && item.mine_inside) {
+    const d = document.createElement("span");
+    d.className = "dot mine"; d.title = "you have unsubmitted work in here";
+    row.append(d);
   }
-  return box;
+  row.onclick = () => { if (path !== brPath) openDir(path); };
+  if (!(item && item.nested)) dropTarget(row, path);
+  return row;
 }
 
+// Ключоване, як і список: розгорнули теку — додалися її рядки, решта дерева
+// лишилася тими самими вузлами.
 function renderTree() {
-  const box = $("br-tree");
-  box.innerHTML = "";
-  box.append(treeNode(null, 0));
+  const items = [];
+  const walk = (item, depth) => {
+    const path = item ? item.path : "";
+    const open = treeOpen.has(path), kids = treeKids[path];
+    items.push(["t:" + path,
+                JSON.stringify([item ? [item.name, item.new_inside, item.mine_inside,
+                                        item.nested] : (st && st.name),
+                                depth, open, path === brPath]),
+                () => treeRow(item, depth)]);
+    if (!open) return;
+    if (!kids) {
+      items.push(["w:" + path, String(depth), () => {
+        const w = document.createElement("div");
+        w.className = "tn"; w.style.paddingLeft = (6 + (depth + 1) * 13) + "px";
+        w.innerHTML = "<span class='tw empty'></span><span class='tl dim'>reading…</span>";
+        return w;
+      }]);
+      return;
+    }
+    for (const k of kids) walk(k, depth + 1);
+  };
+  walk(null, 0);
+  reconcile($("br-tree"), items);
 }
 
 function renderCrumbs(d) {
@@ -1163,10 +1327,13 @@ function renderCrumbs(d) {
     const b = document.createElement("button");
     b.className = "crumb" + (last ? " last" : "");
     b.textContent = label;
-    if (!last) b.onclick = () => openDir(target);
+    if (!last) {
+      b.onclick = () => openDir(target);
+      dropTarget(b, target);                 // тягнути на рівень вище — сюди
+    }
     return b;
   };
-  box.append(mk(st.name || "project", "", parts.length === 0));
+  box.append(mk((st && st.name) || "project", "", parts.length === 0));
   let acc = "";
   parts.forEach((p, i) => {
     acc = acc ? acc + "/" + p : p;
@@ -1180,56 +1347,97 @@ function renderCrumbs(d) {
 }
 
 function renderDir(d) {
-  brDir = d;
   const box = $("br-list");
-  box.innerHTML = "";
+  const items = [];
+  if (d.parent !== null) items.push(["up", "up:" + d.parent, () => upRow(d.parent)]);
   if (!d.entries.length) {
-    box.innerHTML = "<div class='empty'>This folder is empty</div>";
-    return;
+    items.push(["empty", "empty", () => {
+      const e = document.createElement("div");
+      e.className = "empty"; e.textContent = "This folder is empty";
+      return e;
+    }]);
   }
-  if (d.parent !== null) {
-    const up = document.createElement("div");
-    up.className = "e dir";
-    up.innerHTML = "<div class='ico'>↰</div>";
-    const nm = document.createElement("div");
-    nm.className = "nm"; nm.textContent = "..";
-    nm.onclick = () => openDir(d.parent);
-    up.append(nm);
-    box.append(up);
+  for (const it of d.entries) {
+    items.push(["e:" + it.path,
+                JSON.stringify([it, ICONS.get(extOf(it.name, it.kind === "dir")) ? 1 : 0,
+                                taskSig(it.path), nativeDrag]),
+                () => entryRow(it)]);
   }
-  for (const it of d.entries) box.append(entryRow(it));
+  reconcile(box, items);
+  syncPick();
   wantIcons(d.entries.filter(e => e.kind !== "dir").map(e => e.name),
             d.entries.some(e => e.kind === "dir"));
+}
+
+function upRow(parent) {
+  const up = document.createElement("div");
+  up.className = "e dir up";
+  up.innerHTML = "<div class='ico'>↰</div>";
+  const nm = document.createElement("div");
+  nm.className = "nm"; nm.textContent = "..";
+  up.append(nm);
+  up.onclick = () => openDir(parent);
+  dropTarget(up, parent);
+  return up;
+}
+
+// Вибір малюємо класами, а не перебудовою: рядки ті самі, змінилась лише
+// підсвітка — нема чого знищувати й будувати наново.
+function syncPick() {
+  for (const n of $("br-list").children) {
+    const k = n.dataset.k || "";
+    if (!k.startsWith("e:")) continue;
+    const p = k.slice(2);
+    n.classList.toggle("on", brPick.has(p));
+    n.classList.toggle("focus", p === brSel && brPick.size > 1);
+  }
 }
 
 function entryRow(it) {
   const row = document.createElement("div");
   row.className = "e " + it.kind + (it.on_disk ? "" : " ghost-row");
+  const isDir = it.kind === "dir";
+  const plain = !it.nested && !it.link;      // справжня тека проєкту
 
   // Ярлик лишається ярликом: система дала б іконку цілі, а тут важливо саме
   // те, що це не справжня тека проєкту.
   row.append(it.link ? iconEl("ico", "", false, "🔗")
-                     : iconEl("ico", it.name, it.kind === "dir",
-                              it.kind === "dir" ? "📁"
-                                                : (it.binary ? "🎬" : "📄")));
+                     : iconEl("ico", it.name, isDir,
+                              isDir ? "📁" : (it.binary ? "🎬" : "📄")));
 
   const nm = document.createElement("div");
   nm.className = "nm"; nm.textContent = it.name; nm.title = it.path;
-  if (it.kind === "dir") {
-    if (!it.nested && !it.link) nm.onclick = () => openDir(it.path);
-  } else {
-    row.onclick = () => selectFile(it, row);
-    if (it.openable && it.on_disk) row.ondblclick = () => openIt(it);
+  if (isDir && plain) {
+    nm.onclick = ev => {
+      if (!ev.ctrlKey && !ev.shiftKey && !ev.metaKey) openDir(it.path);
+    };
   }
   row.append(nm);
 
-  if (it.kind === "dir" && !it.nested && !it.link) {
+  row.addEventListener("mousedown", ev => rowDown(ev, it));
+  row.addEventListener("mouseup", ev => rowUp(ev, it));
+  row.ondblclick = () => {
+    if (isDir) { if (plain) openDir(it.path); }
+    else if (it.openable && it.on_disk) openIt(it);
+  };
+  row.oncontextmenu = ev => rowMenu(ev, it);
+  // Без нативного перетягування (не Windows) тягнемо засобами сторінки —
+  // лише між теками. На Windows рядок НЕ draggable: інакше вебвʼю почав би
+  // власне перетягування, яке нічого не вміє віддати Blender.
+  if (nativeDrag === false && it.on_disk) {
+    row.draggable = true;
+    row.ondragstart = ev => pageDragStart(ev, it);
+    row.ondragend = pageDragEnd;
+  }
+  if (isDir && plain) dropTarget(row, it.path);
+
+  if (isDir && plain) {
     // Теки svn не блокує — блокуємо все, що в них. Числа беремо з сервера
     // ПЕРЕД дією, щоб у діалозі стояла правда, а не обіцянка.
-    row.append(mini("🔓 lock folder", "", ev => {
+    row.append(still(mini("🔓 lock folder", "", ev => {
       ev.stopPropagation();
       folderLock(it);
-    }));
+    })));
   }
   if (it.nested) row.append(chip("separate project", ""));
   if (it.link) row.append(chip("shortcut", ""));
@@ -1239,12 +1447,12 @@ function entryRow(it) {
   if (it.status === "unversioned" && it.on_disk) row.append(chip("new", "unversioned"));
   if (it.remote_change && it.on_disk) row.append(chip("newer on the server", "remote"));
   if (!it.on_disk) row.append(chip("not downloaded yet", "remote"));
-  if (!it.link && !it.nested) {
+  if (plain) {
     const tc = taskChip(it.path);
-    if (tc) row.append(tc);
+    if (tc) row.append(still(tc));
   }
 
-  if (it.kind === "file") {
+  if (!isDir) {
     const lb = document.createElement("button");
     lb.className = "lockbtn";
     if (it.lock_stale) {
@@ -1254,20 +1462,22 @@ function entryRow(it) {
       lb.classList.add("mine"); lb.textContent = "🔒 mine";
       lb.onclick = ev => {
         ev.stopPropagation();
-        act("do_unlock", [[it.path]], "Releasing…").then(() => openDir(brPath));
+        act("do_unlock", [[it.path]], "Releasing…");
       };
     } else if (it.lock_owner) {
       lb.classList.add("other"); lb.textContent = "🔒 " + it.lock_owner;
       lb.disabled = true;
       lb.title = "locked until your colleague submits their work";
-    } else if (it.on_disk && it.status !== "unversioned") {
+    } else if (it.on_disk && !["unversioned", "added"].includes(it.status)) {
       lb.textContent = "🔓 lock";
       lb.onclick = ev => {
         ev.stopPropagation();
-        act("do_lock", [[it.path]], "Locking…").then(() => openDir(brPath));
+        act("do_lock", [[it.path]], "Locking…");
       };
     }
-    row.append(lb);
+    // Порожню кнопку не малюємо: нескачаному чи новому файлу займати нічого,
+    // а пуста «пігулка» в рядку виглядала як поламка.
+    if (lb.textContent) row.append(still(lb));
   }
 
   const sz = document.createElement("div");
@@ -1277,6 +1487,375 @@ function entryRow(it) {
   row.append(sz, dt);
   return row;
 }
+
+// Кнопка в рядку — це кнопка, а не початок вибору чи перетягування.
+function still(el) {
+  el.addEventListener("mousedown", ev => ev.stopPropagation());
+  return el;
+}
+
+/* --- вибір: клік, Ctrl, Shift — як у файловому менеджері ------------------ */
+let dragCand = null;              // натиснули на рядок — може, зараз потягнуть
+
+function rowDown(ev, it) {
+  if (ev.button !== 0) return;
+  const p = it.path;
+  if (ev.ctrlKey || ev.metaKey) {
+    if (brPick.has(p)) brPick.delete(p); else brPick.add(p);
+    brAnchor = p;
+    brSel = brPick.has(p) ? p : ([...brPick].pop() || null);
+    syncPick();
+    return showSelection();
+  }
+  if (ev.shiftKey && brAnchor && brDir) {
+    const order = brDir.entries.map(e => e.path);
+    const a = order.indexOf(brAnchor), b = order.indexOf(p);
+    if (a >= 0 && b >= 0) {
+      brPick.clear();
+      for (let i = Math.min(a, b); i <= Math.max(a, b); i++) brPick.add(order[i]);
+      brSel = p;
+      syncPick();
+      return showSelection();
+    }
+  }
+  if (!brPick.has(p)) {
+    brPick.clear(); brPick.add(p); brAnchor = p; brSel = p;
+    syncPick();
+    showSelection();
+  } else {
+    brSel = p;                    // група лишається — її можна потягнути разом
+    syncPick();
+  }
+  dragCand = { x: ev.clientX, y: ev.clientY, path: p, group: brPick.size > 1 };
+}
+
+function rowUp(ev, it) {
+  // Клік без перетягування по файлу з уже вибраної групи — лишити лише його.
+  if (dragCand && dragCand.group && dragCand.path === it.path &&
+      !(ev.ctrlKey || ev.shiftKey || ev.metaKey)) {
+    brPick.clear(); brPick.add(it.path); brAnchor = it.path; brSel = it.path;
+    syncPick();
+    showSelection();
+  }
+  dragCand = null;
+}
+
+function showSelection() {
+  if (brPick.size > 1) return renderMulti();
+  const it = brSel && brEntry(brSel);
+  if (it) showSide(it); else { brSelSig = null; sideEmpty(); }
+}
+
+// Вибране, що є на диску, — у порядку списку, а не кліків.
+function pickedOnDisk() {
+  return ((brDir && brDir.entries) || [])
+    .filter(e => brPick.has(e.path) && e.on_disk).map(e => e.path);
+}
+
+async function copyPaths(paths) {
+  try { toast(await api().copy_paths(paths), 4000); }
+  catch (e) { fail(e); }
+}
+
+/* --- перетягування ------------------------------------------------------
+   Один жест на все. На Windows тягнуться СПРАВЖНІ файли (як із Провідника):
+   кинув у Blender — він їх відкриває чи чіпляє, кинув у Провідник —
+   копіює, кинув на теку тут — APSVN переносить через svn move. Назовні
+   файл лише копіюється, ніколи не забирається: див. desktop._drag_on_ui.
+   Поза Windows тягнемо засобами сторінки — лише між теками. */
+let nativeDrag = null;            // null — ще не знаємо; true — Windows
+let dragging = null;              // { paths } — що тягнуть просто зараз
+let dropTo = null;                // на яку теку кинули
+
+document.addEventListener("mousemove", ev => {
+  if (!dragCand || !(ev.buttons & 1) || nativeDrag !== true) return;
+  if (Math.abs(ev.clientX - dragCand.x) + Math.abs(ev.clientY - dragCand.y) < 6) return;
+  dragCand = null;
+  const paths = pickedOnDisk();
+  if (paths.length) nativeDragStart(paths);
+});
+document.addEventListener("mouseup", () => { dragCand = null; });
+
+async function nativeDragStart(paths) {
+  dragging = { paths: paths };
+  dropTo = null;
+  document.body.classList.add("dragging-files");
+  let r = null;
+  try { r = await api().drag_out(paths); } catch (e) { r = "error"; }
+  document.body.classList.remove("dragging-files");
+  clearDropMarks();
+  if (r === "unsupported") { nativeDrag = false; if (brDir) renderDir(brDir); }
+  finishDrag();
+}
+
+function pageDragStart(ev, it) {
+  const paths = brPick.has(it.path) ? pickedOnDisk() : [it.path];
+  dragging = { paths: paths };
+  dropTo = null;
+  ev.dataTransfer.effectAllowed = "move";
+  ev.dataTransfer.setData("text/plain", paths.join("\n"));
+  document.body.classList.add("dragging-files");
+}
+
+function pageDragEnd() {
+  document.body.classList.remove("dragging-files");
+  clearDropMarks();
+  if (dragging && dropTo === null) dragging = null;   // кинули в нікуди
+}
+
+function finishDrag() {
+  const d = dragging, to = dropTo;
+  dragging = null; dropTo = null;
+  if (d && to !== null) moveInto(d.paths, to);
+}
+
+// Чи має сенс кинути сюди: не в саму себе, не в свою ж підтеку, і хоч
+// щось справді має переїхати (не з цієї ж теки).
+function canDropInto(folder) {
+  if (!dragging) return false;
+  let any = false;
+  for (const p of dragging.paths) {
+    if (folder === p || folder.startsWith(p + "/")) return false;
+    if (parentOf(p) !== folder) any = true;
+  }
+  return any;
+}
+
+function clearDropMarks() {
+  document.querySelectorAll(".drop-on").forEach(n => n.classList.remove("drop-on"));
+}
+
+function dropTarget(el, folder) {
+  const over = ev => {
+    if (!canDropInto(folder)) return;        // документ нижче відмовить сам
+    ev.preventDefault();
+    ev.stopPropagation();
+    // Під час нативного перетягування дозволено лише «копію» (щоб Провідник
+    // не забрав файл із копії), тож і тут кажемо «copy» — інакше кинути не
+    // дадуть. Що саме станеться — перенос — пише підсвітка теки.
+    ev.dataTransfer.dropEffect = nativeDrag ? "copy" : "move";
+    if (!el.classList.contains("drop-on")) {
+      clearDropMarks();
+      el.classList.add("drop-on");
+      el.dataset.drop = "move here";
+    }
+  };
+  el.addEventListener("dragenter", over);
+  el.addEventListener("dragover", over);
+  el.addEventListener("dragleave", ev => {
+    if (!el.contains(ev.relatedTarget)) el.classList.remove("drop-on");
+  });
+  el.addEventListener("drop", ev => {
+    if (!canDropInto(folder)) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    clearDropMarks();
+    dropTo = folder;
+    if (!nativeDrag) finishDrag();           // жест сторінки вже завершився
+  });
+}
+
+// Кинуте туди, де приймати нічого — не відкривати файл у вікні замість
+// APSVN. Без цього файл, кинутий з Провідника у вікно, підмінив би собою
+// весь інтерфейс: вебвʼю просто відкриває кинуте.
+document.addEventListener("dragover", ev => {
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = "none";
+});
+document.addEventListener("drop", ev => ev.preventDefault());
+
+/* Перенос у теку. Питаємо лише тоді, коли є що сказати: тека (їде все, що в
+   ній), сцени, які посилаються на файл, чужа задача. Звичайний перенос файлу
+   — одразу: у «Changes» його видно, і «↶ Move back» повертає як було. */
+async function moveInto(paths, folder) {
+  const dest = folder ? baseOf(folder) : ((st && st.name) || "the project root");
+  const dirs = paths.filter(p => (brEntry(p) || {}).kind === "dir");
+  const lines = [];
+  if (dirs.length)
+    lines.push(dirs.length === 1 ? "Everything inside the folder goes with it."
+                                 : "Everything inside those folders goes with them.");
+  const theirs = [];
+  for (const p of paths) {
+    const t = tasksFor(p).find(x => !x.mine && x.status !== "done" && x.assignees.length);
+    if (t) theirs.push(baseOf(p) + " — " + t.assignees.join(", "));
+  }
+  if (theirs.length)
+    lines.push({ text: "Assigned to someone else: " + theirs.join("; ") +
+                 ". If the project uses soft locks, the server will not accept " +
+                 "this move from you.", warn: true });
+  let ub = {};
+  const files = paths.filter(p => !dirs.includes(p));
+  if (files.length && srvOn()) {
+    try { ub = await api().used_by_many(files); } catch (e) { ub = {}; }
+  }
+  const scenes = [...new Set(Object.values(ub).flat())];
+  if (scenes.length) {
+    lines.push({ text: "These scenes point at it and will open without it " +
+                       "until they are pointed at the new place:", warn: true });
+    for (const s of scenes.slice(0, 6)) lines.push({ text: s, mono: true });
+    if (scenes.length > 6) lines.push("…and " + (scenes.length - 6) + " more");
+  }
+  if (lines.length) {
+    lines.push("Nothing changes on the server until you submit it in “Changes”.");
+    const a = await ask({
+      title: "Move " + (paths.length === 1 ? "“" + baseOf(paths[0]) + "”"
+                                           : paths.length + " items") +
+             " to “" + dest + "”?",
+      lines: lines,
+      ok: "Move",
+      danger: !!(scenes.length || theirs.length),
+    });
+    if (!a.ok) return;
+  }
+  await act("move_items", [paths, folder], "Moving…");
+  // вміст обох тек і гілка дерева змінилися — пам'ять про них застаріла
+  brCache.delete(folder);
+  for (const p of paths) brCache.delete(p);
+  delete treeKids[folder];
+  if (treeOpen.has(folder)) {
+    api().browse(folder).then(d => {
+      brCache.set(d.path, d);
+      treeKids[folder] = d.entries.filter(e => e.kind === "dir" && !e.link);
+      renderTree();
+    }).catch(() => {});
+  }
+  refreshDir();
+}
+
+/* --- контекстне меню ------------------------------------------------------ */
+function ctxMenu(x, y, items) {
+  const m = $("ctx");
+  m.innerHTML = "";
+  for (const [label, fn, cls] of items) {
+    if (!label) {
+      const s = document.createElement("div");
+      s.className = "menu-sep";
+      m.append(s);
+      continue;
+    }
+    const b = document.createElement("button");
+    b.className = "menu-item" + (cls ? " " + cls : "");
+    b.textContent = label;
+    b.onclick = ev => { ev.stopPropagation(); ctxClose(); fn(); };
+    m.append(b);
+  }
+  m.classList.remove("hidden");
+  // не вилазити за край вікна
+  const r = m.getBoundingClientRect();
+  m.style.left = Math.max(4, Math.min(x, innerWidth - r.width - 8)) + "px";
+  m.style.top = Math.max(4, Math.min(y, innerHeight - r.height - 8)) + "px";
+}
+
+function ctxClose() { $("ctx").classList.add("hidden"); }
+
+document.addEventListener("mousedown", ev => {
+  if (!$("ctx").contains(ev.target)) ctxClose();
+}, true);
+document.addEventListener("keydown", ev => {
+  if (ev.key === "Escape" && !$("ctx").classList.contains("hidden")) {
+    ev.stopPropagation();
+    ctxClose();
+  }
+}, true);
+
+function rowMenu(ev, it) {
+  ev.preventDefault();
+  if (!brPick.has(it.path)) {
+    brPick.clear(); brPick.add(it.path); brAnchor = it.path; brSel = it.path;
+    syncPick();
+    showSelection();
+  }
+  const paths = [...brPick];
+  const web = () => api().open_web("file", it.path).catch(e => fail(e));
+  const items = [];
+  if (paths.length > 1) {
+    items.push(["📋 Copy " + paths.length + " paths", () => copyPaths(paths)]);
+  } else if (it.kind === "dir") {
+    const plain = !it.nested && !it.link;
+    if (plain) items.push(["📂 Open", () => openDir(it.path)]);
+    items.push(["🗂 Show in folder", () => api().reveal(it.path)]);
+    items.push(["📋 Copy path", () => copyPaths([it.path])]);
+    if (plain) {
+      items.push(["", null]);
+      items.push(["🔓 Lock everything inside", () => folderLock(it)]);
+    }
+    if (srvOn() && plain) items.push(["🌐 On the studio website", web]);
+  } else {
+    if (it.openable && it.on_disk)
+      items.push([it.binary && !it.lock_mine && !it.lock_owner ? "🔓 Lock and open"
+                                                               : "▶ Open", () => openIt(it)]);
+    if (it.on_disk) {
+      items.push(["🗂 Show in folder", () => api().reveal(it.path)]);
+      items.push(["📋 Copy path", () => copyPaths([it.path])]);
+      items.push(["🕘 History", () => openHistory(it.path)]);
+    }
+    if (it.lock_mine) {
+      items.push(["", null]);
+      items.push(["🔒 Release my lock", () => act("do_unlock", [[it.path]], "Releasing…")]);
+    } else if (!it.lock_owner && it.on_disk && it.status !== "unversioned") {
+      items.push(["", null]);
+      items.push(["🔓 Lock", () => act("do_lock", [[it.path]], "Locking…")]);
+    }
+    if (srvOn()) items.push(["🌐 On the studio website", web]);
+  }
+  ctxMenu(ev.clientX, ev.clientY, items);
+}
+
+/* --- клавіатура: як у провіднику системи ---------------------------------- */
+document.addEventListener("keydown", ev => {
+  if (view !== "browse" || !$("modal").classList.contains("hidden")) return;
+  const tag = (document.activeElement && document.activeElement.tagName) || "";
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+  if (ev.altKey && ev.key === "ArrowLeft") { ev.preventDefault(); return goBack(); }
+  if (ev.altKey && ev.key === "ArrowRight") { ev.preventDefault(); return goFwd(); }
+  if ((ev.altKey && ev.key === "ArrowUp") || ev.key === "Backspace") {
+    ev.preventDefault();
+    return goUp();
+  }
+  if (!brDir) return;
+  const order = brDir.entries;
+  if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+    ev.preventDefault();
+    if (!order.length) return;
+    let i = order.findIndex(x => x.path === brSel);
+    i = i < 0 ? 0 : ev.key === "ArrowDown" ? Math.min(order.length - 1, i + 1)
+                                           : Math.max(0, i - 1);
+    const it = order[i];
+    if (ev.shiftKey && brAnchor) {
+      const a = order.findIndex(x => x.path === brAnchor);
+      brPick.clear();
+      for (let k = Math.min(a, i); k <= Math.max(a, i); k++) brPick.add(order[k].path);
+    } else {
+      brPick.clear(); brPick.add(it.path); brAnchor = it.path;
+    }
+    brSel = it.path;
+    syncPick();
+    showSelection();
+    const node = [...$("br-list").children].find(n => n.dataset.k === "e:" + it.path);
+    if (node) node.scrollIntoView({ block: "nearest" });
+    return;
+  }
+  if (ev.key === "Enter") {
+    const it = brSel && brEntry(brSel);
+    if (!it) return;
+    ev.preventDefault();
+    if (it.kind === "dir") { if (!it.nested && !it.link) openDir(it.path); }
+    else if (it.openable && it.on_disk) openIt(it);
+    return;
+  }
+  if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "c") {
+    const paths = pickedOnDisk();
+    if (paths.length) { ev.preventDefault(); copyPaths(paths); }
+    return;
+  }
+  if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "a") {
+    ev.preventDefault();
+    brPick.clear();
+    order.forEach(x => brPick.add(x.path));
+    syncPick();
+    showSelection();
+  }
+});
 
 /* Головна дія бінарника — «зайняти й відкрити». Порядок не косметичний:
    якщо відкрити спершу, а зайняти потім, людина попрацює в файлі, у який
@@ -1319,22 +1898,87 @@ async function openIt(it, after) {
   act("open_file", [it.path, false], "Opening…");
 }
 
-async function selectFile(it, row) {
-  document.querySelectorAll("#br-list .e.on").forEach(x => x.classList.remove("on"));
-  row.classList.add("on");
+// Бічна панель для одного файлу. «Reading…» — лише коли вибрали ІНШИЙ файл:
+// оновлення того самого (лок узяли) не має спершу стирати панель.
+async function showSide(it) {
   brSel = it.path;
+  brSelSig = JSON.stringify(it);
+  if (it.kind === "dir") return renderFolderSide(it);
   const side = $("br-side");
-  side.innerHTML = "<div class='br-empty'>Reading…</div>";
+  if (side.dataset.path !== it.path)
+    side.innerHTML = "<div class='br-empty'>Reading…</div>";
+  side.dataset.path = it.path;
   let d = null;
   if (it.on_disk) {
     try { d = await api().file_details(it.path); } catch (e) { d = null; }
   }
-  if (brSel !== it.path) return;          // людина вже клікнула інший файл
+  if (brSel !== it.path || brPick.size > 1) return;   // людина вже вибрала інше
   renderSide(it, d);
 }
 
 function sideEmpty() {
-  $("br-side").innerHTML = "<div class='br-empty'>Pick a file to see it here</div>";
+  const side = $("br-side");
+  side.dataset.path = "";
+  side.innerHTML = "<div class='br-empty'>Pick a file to see it here</div>";
+}
+
+function dragHint() {
+  return nativeDrag === true
+    ? "Drag onto a folder to move it — or into Blender or Explorer to use a copy of it."
+    : "Drag onto a folder to move it.";
+}
+
+function renderFolderSide(it) {
+  const side = $("br-side");
+  side.innerHTML = "";
+  side.dataset.path = it.path;
+  const plain = !it.nested && !it.link;
+  const big = document.createElement("div");
+  big.className = "br-bigico"; big.textContent = it.nested ? "📦" : it.link ? "🔗" : "📁";
+  const nm = document.createElement("div");
+  nm.className = "br-name"; nm.textContent = it.name;
+  side.append(big, nm);
+  const facts = [];
+  if (it.nested) facts.push("a separate project inside this one");
+  if (it.link) facts.push("a shortcut, not a real folder of the project");
+  if (it.new_inside) facts.push("somebody submitted something in here");
+  if (it.mine_inside) facts.push("you have unsubmitted work in here");
+  if (it.status === "unversioned") facts.push("new — not in the project yet");
+  if (it.moved_from) facts.push("moved here from " + (parentOf(it.moved_from) || "the project root"));
+  for (const f of facts) side.append(dimLine(f));
+  if (plain) side.append(mini("📂 Open", "", () => openDir(it.path)));
+  side.append(mini("🗂 Show in folder", "", () => api().reveal(it.path)));
+  side.append(mini("📋 Copy path", "", () => copyPaths([it.path])));
+  if (plain) side.append(mini("🔓 Lock everything inside", "", () => folderLock(it)));
+  if (srvOn() && plain)
+    side.append(mini("🌐 On the studio website", "", () =>
+      api().open_web("file", it.path).catch(e => fail(e))));
+  if (plain) side.append(dimLine(dragHint()));
+}
+
+function renderMulti() {
+  const side = $("br-side");
+  side.innerHTML = "";
+  side.dataset.path = "";
+  brSelSig = null;
+  const picked = ((brDir && brDir.entries) || []).filter(e => brPick.has(e.path));
+  const nm = document.createElement("div");
+  nm.className = "br-name";
+  nm.textContent = picked.length + " items selected";
+  side.append(nm);
+  for (const e of picked.slice(0, 10)) {
+    const r = document.createElement("div");
+    r.className = "side-l mono-l";
+    r.textContent = (e.kind === "dir" ? "📁 " : "") + e.name;
+    side.append(r);
+  }
+  if (picked.length > 10) side.append(dimLine("…and " + (picked.length - 10) + " more"));
+  const bytes = picked.reduce((a, e) => a + (e.size || 0), 0);
+  if (bytes) side.append(dimLine(fmtSize(bytes) + " in files"));
+  side.append(mini("📋 Copy " + picked.length + " paths", "",
+                   () => copyPaths(pickedOnDisk())));
+  side.append(dimLine(dragHint().replace("move it", "move them")
+                                .replace("a copy of it", "copies of them")));
 }
 
 async function renderSide(it, d) {
@@ -1369,7 +2013,9 @@ async function renderSide(it, d) {
                        "", () => openIt(it)));
     }
     side.append(mini("📂 Show in folder", "", () => api().reveal(it.path)));
+    side.append(mini("📋 Copy path", "", () => copyPaths([it.path])));
     side.append(mini("🕘 History", "", () => openHistory(it.path)));
+    side.append(dimLine(dragHint()));
   }
   if (!srvOn()) return;
 
@@ -1749,8 +2395,7 @@ $("p-sel").onchange = async () => {
     view = "files";
     $("c-msg").value = drafts[to] || "";
     $("srv").classList.add("hidden");
-    brPath = ""; brSel = null;
-    treeKids = {}; treeOpen.clear(); treeOpen.add("");
+    resetExplorer();
     lastFilesSig = null;
     logRows = []; logRev = null;
     for (const k of Object.keys(revCache)) delete revCache[k];
@@ -1874,7 +2519,7 @@ $("s-go").onclick = async () => {
 
 document.querySelectorAll(".tab").forEach(b => b.onclick = async () => {
   const t = b.dataset.tab;
-  if (t === "browse") { showView("browse"); return openDir(brPath); }
+  if (t === "browse") { showView("browse"); return openDir(brPath, { history: true }); }
   if (t === "history") { showView("log"); return loadLog(); }
   if (t === "tasks") {
     showView("tasks"); renderTaskList();
@@ -2587,7 +3232,7 @@ async function sendToReview(d) {
 // що приїхало від колеги), а сервер — лише якщо копії нема. Без картинок
 // діалог той самий, що й був.
 async function conflictPics(f, k) {
-  if (k === "prop") return null;
+  if (k === "prop" || k === "moved") return null;
   let pv = null;
   try { pv = await api().conflict_previews(f.path); } catch (e) { pv = null; }
   if (!pv || (!pv.mine && !pv.theirs)) return null;
@@ -2606,8 +3251,7 @@ function loop() {
   clearTimeout(timer);
   timer = setTimeout(async () => {
     if ($("busy").classList.contains("hidden") &&
-        $("setup").classList.contains("hidden") &&
-        view !== "file" && view !== "browse") {
+        $("setup").classList.contains("hidden") && view !== "file") {
       try { await refresh(); } catch (e) { /* наступний оберт спробує ще */ }
     }
     loop();
@@ -2617,6 +3261,10 @@ function loop() {
 window.addEventListener("pywebviewready", () => {
   refresh();
   loop();
+  api().drag_supported().then(v => {
+    nativeDrag = !!v;
+    if (brDir) renderDir(brDir);          // рядки перебудуються під свій жест
+  }).catch(() => { nativeDrag = false; });
   // Задачі — власним, повільнішим кроком: вони змінюються рідко, а сервер
   // однаково пам'ятає список 40 с. Поки йде передача — не смикаємо.
   setInterval(() => {

@@ -454,6 +454,42 @@ button.chip:hover{filter:brightness(1.3)}
  border-radius:8px;color:var(--tx);padding:9px 11px;font-size:13.5px;
  font-family:inherit;resize:vertical}
 .minput:focus,.tk-comment:focus{outline:none;border-color:var(--acc)}
+
+/* --- провідник: навігація, вибір, перетягування --------------------------- */
+.navbtn{background:none;border:1px solid var(--line);color:var(--dim);border-radius:7px;
+ width:28px;height:26px;font-size:11px;cursor:pointer;flex:none}
+.navbtn:hover:not(:disabled){color:var(--tx);border-color:var(--dim)}
+.navbtn:disabled{opacity:.35;cursor:default}
+/* повільна тека (перший раз, велика): старий вміст лишається, лише блідне —
+   і то з затримкою, щоб швидке відкриття не блимало навіть цим */
+#br-list.loading{opacity:.5;transition:opacity .15s .2s}
+.e{user-select:none}
+/* Ім'я — головне в рядку, і стискатися до нуля йому не можна: так «Shots»
+   зникало за кнопкою «lock folder», позначкою й колонками розміру й дати.
+   Кнопку теки показуємо, коли на рядок навели або вибрали його — вона є ще
+   й у меню правої кнопки та в бічній панелі теки. */
+.e .nm{min-width:120px}
+.e>.chip,.e>.mini,.e>.lockbtn{flex:none;white-space:nowrap}
+.e.dir>.mini{display:none}
+.e.dir:hover>.mini,.e.dir.on>.mini{display:inline-block}
+/* Вузький список (вікно 1180 px: ліворуч дерево, праворуч панель файлу) —
+   колонку дати ховаємо, вона є в бічній панелі. Ширше вікно — дата
+   повертається. Інакше рядок вилазив за край і з'являлась прокрутка вбік. */
+#br-list{container-type:inline-size}
+@container (max-width:560px){.e .dt{display:none}}
+.e.focus{box-shadow:inset 2px 0 0 var(--acc)}
+.chip.moved{color:var(--acc)}
+.tn .dot.mine{background:var(--warn)}
+.br-bigico{font-size:44px;text-align:center;margin:6px 0 2px}
+/* куди зараз упаде перетягуване: тека підсвічена й підписана «move here» */
+.drop-on{outline:2px dashed var(--acc);outline-offset:-2px;background:#16243a!important;
+ position:relative}
+.e.drop-on::after,.tn.drop-on::after{content:attr(data-drop);position:absolute;right:10px;
+ top:50%;transform:translateY(-50%);font-size:11px;color:var(--acc);
+ background:#0f1a2c;border-radius:10px;padding:1px 8px;pointer-events:none}
+body.dragging-files .e.file{opacity:.75}
+/* контекстне меню — там, де клацнули, а не внизу бічної панелі */
+.ctx{position:fixed;bottom:auto;right:auto;z-index:40;min-width:220px}
 /* рядки з тексту сервера, що починались відступом, — шляхи й люди */
 .mtext .p.mono{font-family:Consolas,monospace;font-size:12.5px;color:var(--tx);
  margin-bottom:3px}

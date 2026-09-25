@@ -24,6 +24,7 @@ import datetime
 import locale
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -119,6 +120,8 @@ CONFLICT_TEXT = {
     "tree": "CONFLICT · moved or deleted",
     "prop": "CONFLICT · file settings",
     "obstructed": "CONFLICT · your file is in the way",
+    # ти переніс файл, а колега тим часом його змінив — див. resolve_conflict
+    "moved": "CONFLICT · changed while you moved it",
 }
 
 STATUS_TEXT = {
@@ -860,9 +863,24 @@ def status(wc, remote=False, username=None, password=None, me=None, meta=None):
             # червоний рядок, сортування вгору) вмикаються самі собою.
             tree_conf = ws is not None and ws.get("tree-conflicted") == "true"
             prop_conf = ws is not None and ws.get("props") == "conflicted"
+            # Дві половини переносу (svn move). svn пише їх в ОКРЕМИХ
+            # атрибутах, як і конфлікти: нова половина — item="added" з
+            # moved-from, стара — item="deleted" з moved-to. Здавати їх можна
+            # лише разом (E200009 «both sides of the move must be committed
+            # together» — перевірено tests/exp_move.py), тож обидві мусять
+            # бути відомі й інтерфейсу, і здачі.
+            moved_from = _rel(ws.get("moved-from") or "") if ws is not None else ""
+            moved_to = _rel(ws.get("moved-to") or "") if ws is not None else ""
             kind = None
             if st == "conflicted":
                 kind = "text"
+            elif tree_conf and st == "deleted" and moved_to:
+                # Ти переніс файл, а колега тим часом його змінив. Від «tree»
+                # відрізняється не словами, а наслідком: --accept working тут
+                # МОВЧКИ викидає зміну колеги, і наступна здача переносу
+                # стирає її і з сервера. Перевірено дослідом (tests/exp_move.py
+                # і test_move.py), див. resolve_conflict.
+                kind = "moved"
             elif tree_conf:
                 # Перешкода відрізняється від решти деревʼяних конфліктів тим,
                 # що файл ФІЗИЧНО лежить на диску — і це файл художника. Без
@@ -898,9 +916,13 @@ def status(wc, remote=False, username=None, password=None, me=None, meta=None):
                 "path": path,
                 "status": "conflicted" if kind else st,
                 "wc_item": st,                    # що насправді сказав svn
-                "conflict_kind": kind,            # text | tree | prop | obstructed
+                "conflict_kind": kind,            # text | tree | prop | obstructed | moved
                 "status_text": (CONFLICT_TEXT[kind] if kind
+                                else "moved here" if moved_from
+                                else "moved away" if moved_to
                                 else STATUS_TEXT.get(st, st)),
+                "moved_from": moved_from or None,
+                "moved_to": moved_to or None,
                 "remote_change": remote_change, "remote_kind": remote_kind,
                 "lock_owner": owner,
                 "lock_mine": mine, "lock_stale": stale,
@@ -1009,6 +1031,87 @@ def purge_deleted(wc, paths):
             pass
 
 
+def move_into(wc, rel, dest_rel):
+    """Перенести версійований файл чи теку В наявну теку dest_rel (svn move).
+
+    Саме svn move, а не перейменування на диску: так історія йде за файлом, а
+    сервер переносить за ним і задачу. Ім'я лишається тим самим — ми
+    переносимо в теку, а не перейменовуємо.
+
+    `move` не приймає --targets (як cat і copy), тож шляхи йдуть в argv — і
+    не-ASCII туди не можна. Обидва кінці тут ІСНУЮТЬ на диску (джерело й тека
+    призначення), а для наявного шляху є 8.3-псевдонім: svn розгортає його в
+    справжнє ім'я сам (перевірено tests/exp_move.py — кириличний файл
+    переїжджає з кириличним ім'ям). Хвостова '@' — як у --targets: інакше
+    'render@2x.png' розбиралося б як peg-ревізія.
+    """
+    src = os.path.join(wc, rel.replace("/", os.sep))
+    dst = os.path.join(wc, dest_rel.replace("/", os.sep)) if dest_rel else wc
+    a, b = _ascii_path(src), _ascii_path(dst)
+    if a is None or b is None:
+        raise SvnError("“%s” has characters that svn on this computer cannot "
+                       "handle. Rename it using Latin letters."
+                       % os.path.basename(src if a is None else dst))
+    _run(["move", a + "@", b], cwd=wc, timeout=600)
+
+
+def add_dir(wc, rel):
+    """Теку, якої svn ще не знає, — під версійний контроль БЕЗ вмісту.
+
+    Перенести файл у незнайому svn теку не можна (E155010 «is not under
+    version control», перевірено). Додаємо лише саму теку: її вміст людина
+    ще не просила здавати, і тихо ставити в чергу все, що там лежить, — не
+    наша справа.
+    """
+    _run(["add", "--parents", "--depth", "empty"], cwd=wc, targets=[rel],
+         timeout=120)
+
+
+def undo_move(wc, old, new, rescue_dir):
+    """Скасувати перенос повністю: старе місце — як на сервері, нове — прибрати.
+
+    Для звичайного переносу є простіший шлях — перенести назад (svn сам
+    упізнає повернення, і статус стає чистим, перевірено). Цей — для випадку,
+    коли назад не можна: старе місце в конфлікті, бо колега змінив файл, поки
+    ти його переносив. revert обох половин повертає старе місце (вже зі
+    зміною колеги).
+
+    Копія нового місця береться ДО revert, а не після: revert половини
+    переносу стирає файл на новому місці разом із правками, зробленими вже
+    після переносу, — сліду не лишається. Спершу тут було навпаки, і
+    tests/test_move.py упіймав: «Safety copies» порожні, а робота стерта.
+    """
+    full = os.path.join(wc, new.replace("/", os.sep))
+    saved = None
+    if rescue_dir and os.path.exists(full):
+        os.makedirs(rescue_dir, exist_ok=True)
+        stamp = time.strftime("%Y-%m-%d %H-%M-%S")
+        saved = os.path.join(rescue_dir,
+                             "%s %s" % (stamp, os.path.basename(full)))
+        if os.path.isdir(full):
+            shutil.copytree(full, saved, ignore=shutil.ignore_patterns(".svn"))
+        else:
+            shutil.copyfile(full, saved)
+    revert(wc, [old, new])
+    # Що svn лишив на новому місці невідомим — прибираємо: копія вже в
+    # «Safety copies», а тут воно лише лізло б у «Changes» як нове.
+    if os.path.isdir(full):
+        shutil.rmtree(full, onerror=_writable_retry)
+    elif os.path.isfile(full):
+        os.chmod(full, 0o666)          # svn:needs-lock лишає файл read-only
+        os.unlink(full)
+    return saved
+
+
+def _writable_retry(func, path, _exc):
+    """rmtree на read-only файлі (svn:needs-lock) — зняти атрибут і ще раз."""
+    try:
+        os.chmod(path, 0o666)
+        func(path)
+    except OSError:
+        pass
+
+
 def revert(wc, paths):
     _run(["revert", "--depth", "infinity"], cwd=wc, targets=paths, timeout=600)
 
@@ -1038,6 +1141,16 @@ def resolve_conflict(wc, path, kind, choice="mine"):
     """
     if choice == "working":
         _run(["resolve", "--accept", "working"], cwd=wc, targets=[path],
+             timeout=600)
+        return
+    if kind == "moved":
+        # «Лишити мій перенос» — mine-conflict: svn переносить зміну колеги у
+        # файл на НОВОМУ місці. --accept working тут знищив би її: конфлікт
+        # знято, у перенесеному файлі стара версія, а здача переносу видаляє
+        # старе місце разом із роботою колеги. Перевірено дослідом.
+        # «Повернути як було» робить app.do_resolve через undo_move: для цього
+        # треба знати другу половину переносу, а тут її немає.
+        _run(["resolve", "--accept", "mine-conflict"], cwd=wc, targets=[path],
              timeout=600)
         return
     if kind in ("tree", "obstructed"):

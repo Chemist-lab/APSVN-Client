@@ -209,15 +209,21 @@ If the project lives on the studio's own server (svn-native — an address like
 with the same user name and password. On any other Subversion server none of
 this appears, and nothing else changes.
 
-* **My tasks** — a tab listing what is assigned to you in this project,
-  grouped by what to do about it: *Sent back* (your supervisor asked for
-  changes — their note is right there in the task), *In progress*, *To do*,
-  *Waiting for review*. The statuses and their colours are Kitsu's. From a
-  task: **▶ Start working**, **✔ Send to review** (with an optional note for
-  your supervisor), **↩ Back to work**, comments, and the file itself — lock
-  and open, show in folder, history. Accepting work or sending it back is the
-  supervisor's, on the website, so there are no buttons here that would only
-  ever be refused.
+* **Tasks** — a tab with two views. **Mine**: what is assigned to you in
+  this project, grouped by what to do about it — *Sent back* (your supervisor
+  asked for changes — their note is right there in the task), *In progress*,
+  *To do*, *Waiting for review*, and statuses the studio added in Kitsu
+  under *Other statuses*. **Whole project**: every task of the project, with
+  who is on it — anybody who is in the project can look through it and open
+  the files of any task; a filter finds a task by name, type or person.
+  From a task: **▶ Start working**, **✔ Send to review** (with an optional
+  note for your supervisor), **↩ Back to work**, comments, and the files —
+  lock and open, show in folder, history, **📂 Open in the Explorer tab**; a
+  task on a folder (an asset, a shot) lists the files inside it with an
+  **Open** button each. Which status buttons appear is decided by the
+  server, by Kitsu's rules: an artist changes their own tasks, a supervisor
+  any task, with any Kitsu status — so there are no buttons that would only
+  ever be refused. Whatever anybody changes is written in their name.
 * **Tasks in the file lists.** A file of *your* task shows its status
   (`📋 Retake`); a file assigned to *someone else* shows their name
   (`📋 taras`) — before you try to lock it, not after. Click either to open
@@ -380,7 +386,7 @@ part of the root, with the code in `Resources/app`.
 | `explorer.py`   | the Explorer: one folder at a time |
 | `blendthumb.py` | preview embedded in a `.blend` |
 | `imgthumb.py`   | previews for png/jpg/tga/exr |
-| `tests/`        | 667 checks without a server, up to 24 more (read-only) against the real one |
+| `tests/`        | 679 checks without a server, up to 24 more (read-only) against the real one |
 
 Settings live in `%APPDATA%\APSVN\config.json`, format 2:
 `{"format":2, "projects":[…], "current":"<id>", …mirror of the current one…}`.
@@ -751,11 +757,22 @@ behind decisions that look odd until you know why.
   rebuilds when the hook's own text is lost uses the server's newer shape,
   `path — people (Type, Status; …)`, because one file can have two current
   steps.
-* **Supervisor tools stay on the website.** Creating shots in bulk (with its
-  plan-first dry run), accepting work or sending it back — the API allows
-  them for supervisors, and the website does them with the context they need
-  (the board, the shots table, the plan). APSVN is the artist's tool and
-  shows no buttons that would only ever be refused.
+* **What a person may do with a task, the server says — APSVN does not
+  guess.** Since the whole project's tasks are visible to everybody in it,
+  guessing on somebody else's task would mean buttons that refuse. The
+  Kitsu-era server answers with the statuses this person may set on this
+  task (`task.moves`), whether they are a supervisor, and whether they are
+  linked to a person in Kitsu at all; APSVN draws exactly those, with Kitsu's
+  names — including statuses it does not know itself (*Ready To Start*,
+  *Approved*), which is why `task_move` checks only the shape of a status key,
+  not a fixed list. Commenting is offered to the assignee and supervisors
+  only, as Kitsu allows. An older server that does not send `moves` gets the
+  old artist rule, unchanged. Tasks in a status APSVN has no group for used
+  to vanish from the list; they now stand under *Other statuses*.
+* **Creating shots stays on the website.** The API allowed it for
+  supervisors (with a plan-first dry run); the website does it with the
+  context it needs, and the Kitsu-era server has moved shot creation to
+  Kitsu anyway.
 * **The launcher is distlib's, not PyInstaller's.** PyInstaller would give a
   7 MB exe — a whole Python inside a wrapper whose only job is to hand over
   control, a third of the weight of the program itself — and antivirus
@@ -1007,7 +1024,7 @@ decision, not a gap.
 
 ### Tests
 
-Without a server — 667 checks against a temporary `file://` repository (and,
+Without a server — 679 checks against a temporary `file://` repository (and,
 for the studio server, a fake one on `127.0.0.1`); they leave nothing behind:
 
 ```bash

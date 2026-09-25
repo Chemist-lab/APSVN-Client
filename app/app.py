@@ -602,6 +602,7 @@ class Api:
         # сервер однаково відповів би 403.
         later = srv.waiting(t)
         return {
+            "kind": t.get("kind") or "", "sequence": t.get("sequence") or "",
             "entity": t.get("entity"), "step": t.get("step"),
             "waiting_for": [str(x) for x in (t.get("waiting_for") or [])],
             "waiting": later,
@@ -753,6 +754,26 @@ class Api:
         view = self._task_view(t, prefix, s.get("me"), p.get("wc"))
         view["supervisor"] = bool(got.get("supervisor"))
         view["created_by"] = t.get("created_by")
+        # Що ЦЯ людина може з цією задачею, сервер тепер каже сам (права
+        # Kitsu: керівник — будь-який статус будь-якої задачі, художник — лише
+        # у своїй). Беремо його відповідь, а не власне правило: задачі тепер
+        # бачать усі в проєкті, і вгадувати на чужих — означало б кнопки, що
+        # відмовляють. Старий сервер цього поля не має — тоді як і було.
+        told = t.get("moves")
+        if isinstance(told, list):
+            ok = [m for m in told if isinstance(m, dict) and m.get("key")]
+            view["moves"] = [str(m["key"]) for m in ok]
+            view["move_names"] = {str(m["key"]): str(m.get("name") or m["key"])
+                                  for m in ok}
+            view["linked"] = bool(got.get("linked"))
+            # коментар у Kitsu — лише виконавець або керівник, і лише той, кого
+            # зіставлено з людиною Kitsu (інакше не знати, від чийого імені)
+            view["can_comment"] = view["linked"] and (view["mine"] or
+                                                      view["supervisor"])
+        else:
+            view["move_names"] = {}
+            view["linked"] = True
+            view["can_comment"] = True
         # новіші зверху — як у стрічці, яку людина гортає вниз у минуле
         view["events"] = [{k: e.get(k) for k in ("at", "user", "kind", "old",
                                                  "new", "comment", "rev")}
@@ -764,8 +785,13 @@ class Api:
         return view
 
     def task_move(self, task_id, status, comment=""):
-        """Новий статус задачі. Правила перевіряє сервер; 403 — це правило."""
-        if status not in srv.STATUS_NAMES:
+        """Новий статус задачі. Правила перевіряє сервер; 403 — це правило.
+
+        Ключ не звіряємо з нашими п'ятьма: у Kitsu бувають і свої статуси
+        (Ready, Approved…), і який із них можна, каже сервер. Лише форма
+        ключа — щоб у запит не пішло казна-що.
+        """
+        if not re.match(r"^[A-Za-z0-9_.-]{1,40}$", str(status or "")):
             raise sc.SvnError("Unknown status")
         client, _ = self._client()
         if client is None:
@@ -780,7 +806,7 @@ class Api:
         t = got.get("task") or {}
         return "“%s” — %s now." % (t.get("name") or "The task",
                                    t.get("status_name") or
-                                   srv.STATUS_NAMES[status])
+                                   srv.STATUS_NAMES.get(status, status))
 
     def task_comment(self, task_id, text):
         text = (text or "").strip()

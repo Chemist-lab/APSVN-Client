@@ -166,7 +166,7 @@ def _t(i, path, typ, status, who, entity=None, step=None, waiting=()):
     return {"id": i, "repo": "demo", "path": path, "type": typ, "title": "",
             "status": status, "due": None, "assignees": list(who),
             "created_by": "andrii", "gone": 0,
-            "status_name": srv.STATUS_NAMES[status], "overdue": False,
+            "status_name": srv.STATUS_NAMES.get(status, status), "overdue": False,
             "name": path.rsplit("/", 1)[-1], "created": 1, "updated": 1,
             "entity": entity, "step": step, "waiting_for": list(waiting)}
 
@@ -178,6 +178,21 @@ TASKS.update({
     17: _t(17, "/trunk/Shots/sh040", "Layout", "wip", ["andrii"], 7),
     18: _t(18, "/trunk/Shots/sh040/notes.txt", "Notes", "done", ["taras"], 7),
 })
+# Задачі з Kitsu: чужа (дивитися можна, змінювати — ні), своя зі статусом, якого
+# в нас немає (Ready), і чужа, яку бачить керівник.
+TASKS.update({
+    31: dict(_t(31, "/trunk/Assets/prop/lamp", "Modeling", "wip", ["taras"]), kitsu=True),
+    32: dict(_t(32, "/trunk/Assets/prop/chair", "Modeling", "ready", ["olena"]),
+             kitsu=True, status_name="Ready To Start"),
+    33: dict(_t(33, "/trunk/Assets/prop/table", "Rigging", "wfa", ["taras"]), kitsu=True,
+             lead=True),
+    34: dict(_t(34, "/trunk/Assets/prop/sofa", "Rigging", "wip", ["taras"]), kitsu=True,
+             linked=False),
+})
+KITSU_MOVES = {32: [{"key": "wip", "name": "Work In Progress"},
+                    {"key": "wfa", "name": "Waiting For Approval"}],
+               33: [{"key": "done", "name": "Done"}, {"key": "retake", "name": "Retake"},
+                    {"key": "approved", "name": "Approved"}]}
 PROCESSES = [{"id": 1, "name": "Shot", "kind": "shot", "steps": [
     {"id": 1, "name": "Blocking"}, {"id": 2, "name": "Animation"},
     {"id": 3, "name": "Assembly"}]}]
@@ -243,10 +258,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if t is None:
                 return self._send(404, {"error": "not found"})
             if len(parts) == 5:
+                if t.get("kitsu"):
+                    # як сервер із Kitsu: сам каже, що ЦІЙ людині можна
+                    return self._send(200, {"task": dict(t, events=[], moves=KITSU_MOVES.get(
+                        tid, [])), "supervisor": t.get("lead", False),
+                        "linked": t.get("linked", True)})
                 return self._send(200, {"task": dict(t, events=EVENTS.get(tid, [])),
                                         "supervisor": False})
             body = json.loads(self.rfile.read(int(self.headers.get(
                 "Content-Length") or 0)).decode("utf-8") or "{}")
+            if parts[5] == "status" and t.get("kitsu"):
+                new = body.get("status")
+                allowed = [m["key"] for m in KITSU_MOVES.get(tid, [])]
+                if new not in allowed:
+                    return self._send(403, {"error": "Only the assignee or a supervisor "
+                                            "can set this here."})
+                t.update(status=new, status_name={m["key"]: m["name"] for m in
+                                                  KITSU_MOVES[tid]}[new])
+                return self._send(200, {"task": t})
             if parts[5] == "status":
                 new = body.get("status")
                 if USER not in t["assignees"]:
@@ -393,7 +422,7 @@ except srv.ApiError as e:
 
 print("--- клієнт: задачі ---")
 t = client.tasks(status=srv.ACTIVE)
-check("активні задачі проєкту", sorted(x["id"] for x in t["tasks"]) == [11, 12, 13, 15, 16, 17],
+check("активні задачі проєкту", sorted(x["id"] for x in t["tasks"]) == [11, 12, 13, 15, 16, 17, 31, 33, 34],
       [x["id"] for x in t["tasks"]])
 try:
     client.set_status(12, "wfa")
@@ -448,7 +477,7 @@ check("відповідь сервера пам'ятається — други�
 ov = api.tasks_overview(force=True)
 by = {t["id"]: t for t in ov.get("tasks", [])}
 check("прочитано ВСІ задачі — і завершені (їх потребує правило «чий файл»)",
-      ov.get("ok") and set(by) == {11, 12, 13, 14, 15, 16, 17, 18}, ov.get("error"))
+      ov.get("ok") and set(by) == {11, 12, 13, 14, 15, 16, 17, 18, 31, 32, 33, 34}, ov.get("error"))
 check("шлях задачі переведено в шлях копії",
       by[11]["local"] == "Shots/sh010.blend", by[11]["local"])
 check("задача поза копією (гілка) — local None", by[13]["local"] is None)
@@ -560,6 +589,38 @@ check("у задачі — картинка файлу", (d.get("preview") or ""
 done = api.tasks_done()
 check("завершені — лише мої й лише на вимогу", [t["id"] for t in done] == [14],
       [t["id"] for t in done])
+
+print("--- задачі всього проєкту: права з сервера (Kitsu) ---")
+d = api.task_detail(31)
+check("чужу задачу видно й відкрито — кнопок статусу немає (сервер не дав)",
+      d["moves"] == [] and not d["mine"], d["moves"])
+check("…коментувати чужу — ні (у Kitsu це виконавець або керівник)",
+      d["can_comment"] is False)
+d = api.task_detail(32)
+check("своя задача зі статусом, якого в нас немає (Ready), — кроки від сервера",
+      d["moves"] == ["wip", "wfa"] and d["move_names"]["wfa"] == "Waiting For Approval",
+      d["moves"])
+check("…і коментувати свою можна", d["can_comment"] is True)
+d = api.task_detail(33)
+check("керівник на чужій задачі — усе, що дав сервер, разом зі статусом Kitsu",
+      d["supervisor"] and d["moves"] == ["done", "retake", "approved"]
+      and d["can_comment"] is True, (d["supervisor"], d["moves"]))
+msg = api.task_move(33, "approved", "гарно")
+check("статус, якого в нас немає (approved), іде на сервер як є",
+      "Approved" in msg and TASKS[33]["status"] == "approved", msg)
+for junk in ("approved; rm", "", "a" * 60, "../x"):
+    try:
+        api.task_move(33, junk)
+        check("сміття замість статусу не йде на сервер: %r" % junk[:12], False)
+    except sc.SvnError:
+        check("сміття замість статусу не йде на сервер: %r" % junk[:12], True)
+d = api.task_detail(34)
+check("не зіставлений із Kitsu — дивиться, але не змінює й не коментує",
+      d["linked"] is False and d["can_comment"] is False, d["linked"])
+d = api.task_detail(11)
+check("старий сервер (без moves у задачі) — як і було: свої кроки, коментувати можна",
+      d["can_comment"] is True and d["linked"] is True and d["move_names"] == {},
+      (d["moves"], d["can_comment"]))
 
 print("--- Api: прев'ю ---")
 n0 = len(Handler.hits)

@@ -432,6 +432,25 @@ button.chip:hover{filter:brightness(1.3)}
 .tk-ev-c{margin-top:6px;padding:8px 10px;background:#0c0e12;border:1px solid var(--line);
  border-radius:8px;color:var(--tx);white-space:pre-wrap;word-break:break-word}
 .keep.review{color:var(--st-wfa)}
+/* свої / весь проєкт — перемикач, як вкладки в мініатюрі */
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;
+ flex:none}
+.seg button{background:none;border:none;color:var(--dim);padding:4px 11px;font-size:12px;
+ cursor:pointer;font-family:inherit}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button.on{background:#1d2430;color:var(--tx)}
+.tasks-q{background:#0c0e12;border:1px solid var(--line);border-radius:7px;color:var(--tx);
+ padding:4px 9px;font-size:12px;flex:1 1 140px;min-width:80px;max-width:240px;
+ font-family:inherit}
+#tab-tasks .crumbs .mini{flex:none}
+.tasks-q:focus{outline:none;border-color:var(--acc)}
+.tk-who{font-size:11.5px;color:var(--dim);margin-top:2px;white-space:nowrap;overflow:hidden;
+ text-overflow:ellipsis}
+/* своя задача в списку всього проєкту — тонка смужка зліва */
+.tk.mine{box-shadow:inset 2px 0 0 var(--acc)}
+.tk-file{display:flex;align-items:center;gap:8px}
+.tk-file-nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+ font-family:Consolas,monospace;font-size:12px}
 
 /* --- розділи бічних панелей (провідник, задача) --- */
 .side-sec{margin-top:8px;border-top:1px solid var(--line);padding-top:10px}

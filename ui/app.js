@@ -345,6 +345,7 @@ async function _refresh(mine) {
     THUMBS.clear();
     renderTaskBadge();
     resetExplorer();
+    taskQuery = ""; $("tasks-q").value = "";   // фільтр — свій у кожного проєкту
     if (s.configured) initServer();
   }
 
@@ -3070,16 +3071,52 @@ function renderTaskBadge() {
   $("tab-tasks-btn").title = hot ? "some of your tasks were sent back, or are overdue" : "";
 }
 
+// [ключ, назва, підказка для своїх, підказка для всього проєкту]
 const TASK_GROUPS = [
-  ["retake", "Sent back", "your supervisor asked for changes"],
-  ["wip", "In progress", "what you are working on"],
-  ["todo", "To do", "not started yet"],
-  ["wfa", "Waiting for review", "your supervisor will look at these"],
+  ["retake", "Sent back", "your supervisor asked for changes", "sent back for changes"],
+  ["wip", "In progress", "what you are working on", "being worked on"],
+  ["todo", "To do", "not started yet", "not started yet"],
+  ["wfa", "Waiting for review", "your supervisor will look at these",
+   "waiting for a supervisor"],
   // Крок чекає, поки керівник прийме попередній (Animation — Blocking). Не
   // робота на зараз: рухати його не можна, перший коміт його не починає.
-  ["next", "Coming up", "starts when the step before it is accepted"],
+  // Статуси, яких у нас немає: у Kitsu студія заводить свої (Ready, Approved…).
+  // Раніше такі задачі не потрапляли в жодну групу — тобто зникали зі списку.
+  ["other", "Other statuses", "as they are named in Kitsu", "as they are named in Kitsu"],
+  ["next", "Coming up", "starts when the step before it is accepted",
+   "starts when the step before it is accepted"],
 ];
-const groupOf = t => t.waiting ? "next" : t.status;
+const KNOWN_GROUPS = new Set(["retake", "wip", "todo", "wfa"]);
+const groupOf = t => t.waiting ? "next" : KNOWN_GROUPS.has(t.status) ? t.status : "other";
+
+/* Свої — або всі задачі проєкту. Дивитися проєкт і відкривати файли будь-якої
+   задачі може кожен, хто в проєкті: усе, що він змінить, однаково
+   записується від його імені, а що саме йому можна, вирішує сервер (права
+   Kitsu). Вибір пам'ятаємо. */
+let taskScope = null;               // "mine" | "all"; null — ще не прочитали з налаштувань
+let taskQuery = "";
+
+function scopeNow() {
+  if (taskScope === null) taskScope = pref("tasks_all") ? "all" : "mine";
+  return taskScope;
+}
+
+document.querySelectorAll("#tasks-scope button").forEach(b => b.onclick = () => {
+  taskScope = b.dataset.scope;
+  taskDone = null;
+  api().set_pref("tasks_all", taskScope === "all").catch(() => {});
+  if (st && st.prefs) st.prefs.tasks_all = taskScope === "all";
+  renderTaskList();
+});
+$("tasks-q").oninput = () => { taskQuery = $("tasks-q").value; renderTaskList(); };
+
+function taskHit(t) {
+  const q = taskQuery.trim().toLowerCase();
+  if (!q) return true;
+  return [t.name, t.type, t.local || t.path, t.status_name, t.sequence]
+    .concat(t.assignees || [])
+    .some(x => String(x || "").toLowerCase().includes(q));
+}
 
 function taskOrder(a, b) {
   if (a.overdue !== b.overdue) return a.overdue ? -1 : 1;
@@ -3089,7 +3126,12 @@ function taskOrder(a, b) {
 
 function renderTaskList() {
   const box = $("tasks-list");
-  $("tasks-title").textContent = "My tasks in “" + ((st && st.name) || "") + "”";
+  const scope = scopeNow();
+  // Назва проєкту й так угорі, у випадайці: тут вона лише забирала місце
+  // в рядку, де вже стоять перемикач, фільтр і дві кнопки.
+  $("tasks-title").textContent = "Tasks";
+  document.querySelectorAll("#tasks-scope button").forEach(
+    b => b.classList.toggle("on", b.dataset.scope === scope));
   const err = tasksData && !tasksData.ok && tasksData.error;
   $("tasks-warn").textContent = err ? "Could not refresh the tasks: " + err : "";
   $("tasks-warn").classList.toggle("hidden", !err);
@@ -3130,6 +3172,14 @@ function renderTaskList() {
       w.textContent = "after " + t.waiting_for.join(", ");
       body.append(w);
     }
+    if (scope === "all") {
+      // у всьому проєкті головне питання — «хто на цьому»
+      const who = document.createElement("div");
+      who.className = "tk-who";
+      who.textContent = t.assignees.length ? "👤 " + t.assignees.join(", ") : "nobody yet";
+      body.append(who);
+      if (t.mine) c.classList.add("mine");
+    }
     c.append(th, body, t.waiting ? chip("Next", "st st-next")
                                  : chip(t.status_name, "st st-" + t.status));
     c.onclick = () => openTask(t.id);
@@ -3145,32 +3195,37 @@ function renderTaskList() {
     return h;
   };
 
-  const mine = myTasks();
-  for (const [status, title, hint] of TASK_GROUPS) {
-    const rows = mine.filter(t => groupOf(t) === status).sort(taskOrder);
+  const all = (tasksData && tasksData.tasks) || [];
+  const pool = all.filter(t => t.status !== "done" && (scope === "all" || t.mine))
+                  .filter(taskHit);
+  for (const [status, title, hint, hintAll] of TASK_GROUPS) {
+    const rows = pool.filter(t => groupOf(t) === status).sort(taskOrder);
     if (!rows.length) continue;
-    out.push(head(title, rows.length, hint));
+    out.push(head(title, rows.length, scope === "all" ? hintAll : hint));
     for (const t of rows) out.push(card(t));
   }
-  if (!mine.length) {
+  if (!pool.length) {
     const e = document.createElement("div");
     e.className = "empty tasks-empty";
-    e.textContent = "Nothing assigned to you in this project right now 🎉";
+    e.textContent = taskQuery.trim() ? "Nothing matches “" + taskQuery.trim() + "”"
+      : scope === "all" ? "No tasks in this project yet"
+      : "Nothing assigned to you in this project right now 🎉";
     out.push(e);
   }
   if (taskDone === null) {
-    const b = mini("Show my finished tasks", "", () => {
+    const b = mini(scope === "all" ? "Show finished tasks" : "Show my finished tasks", "", () => {
       // завершені вже приїхали разом з усіма (їх потребує правило «чий
       // файл»), тож окремий запит зайвий
-      taskDone = ((tasksData && tasksData.tasks) || [])
-        .filter(t => t.mine && t.status === "done").slice(0, 50);
+      taskDone = all.filter(t => t.status === "done" && (scope === "all" || t.mine))
+                    .slice(0, 200);
       renderTaskList();
     });
     b.classList.add("tk-more");
     out.push(b);
-  } else if (taskDone.length) {
-    out.push(head("Done", taskDone.length, "accepted by your supervisor"));
-    for (const t of taskDone) out.push(card(t));
+  } else if (taskDone.filter(taskHit).length) {
+    const done = taskDone.filter(taskHit);
+    out.push(head("Done", done.length, "accepted by a supervisor"));
+    for (const t of done) out.push(card(t));
   } else {
     const e = document.createElement("div");
     e.className = "tk-none"; e.textContent = "No finished tasks yet.";
@@ -3272,13 +3327,20 @@ function renderTaskSide(d) {
   // справа керівника, і кнопок, які завжди відмовлять, тут немає.
   const acts = document.createElement("div");
   acts.className = "tk-acts";
+  // Кроки — ті, що дозволив сервер САМЕ цій людині (права Kitsu): художнику
+  // — у своїй задачі, керівнику — будь-які. Назви — як у Kitsu.
   for (const to of d.moves || []) {
     if (to === "wfa") {
-      const b = mini("✔ Send to review", "go", () => sendToReview(d));
-      acts.append(b);
+      acts.append(mini("✔ Send to review", "go", () => sendToReview(d)));
     } else if (to === "wip") {
       acts.append(mini(d.status === "todo" ? "▶ Start working" : "↩ Back to work",
                        "", () => moveTask(d, "wip")));
+    } else if (to === "retake") {
+      acts.append(mini("↩ " + ((d.move_names || {}).retake || "Retake"), "danger",
+                       () => sendBack(d)));
+    } else {
+      const name = (d.move_names || {})[to] || STATUS_NAME[to] || to;
+      acts.append(mini("→ " + name, "", () => moveTask(d, to)));
     }
   }
   if (acts.children.length) side.append(acts);
@@ -3290,11 +3352,14 @@ function renderTaskSide(d) {
     side.append(holder);
     shotStrip(holder, d);
   }
+  if (d.linked === false)
+    side.append(dimLine("You are not linked to a person in Kitsu yet — you can look " +
+                        "and open files, but not change the task. Ask an administrator."));
   if (d.waiting)
     side.append(dimLine("Not yours to start yet: it opens when " +
                         d.waiting_for.join(", ") + " is accepted. Your first commit " +
                         "does not start it, and it cannot be moved until then."));
-  else if (!d.mine)
+  else if (!d.mine && !(d.moves || []).length && d.linked !== false)
     side.append(dimLine("Assigned to " + (d.assignees.join(", ") || "nobody") +
                         " — only they or a supervisor move it."));
   else if (d.status === "wfa")
@@ -3318,13 +3383,18 @@ function renderTaskSide(d) {
                        () => openIt(it, () => loadTasks(true))));
     }
     if (d.on_disk || d.is_dir)
-      side.append(mini("📂 Show in folder", "", () => api().reveal(d.local)));
+      side.append(mini("🗂 Show in folder", "", () => api().reveal(d.local)));
     if (d.on_disk)
       side.append(mini("🕘 History", "", () => openHistory(d.local)));
   }
+  if (d.local != null && (d.on_disk || d.is_dir))
+    side.append(mini("📂 Open in the Explorer tab", "", () => goExplore(d.local, d.is_dir)));
   side.append(mini("🌐 On the studio website", "", () =>
     (d.local != null ? api().open_web("file", d.local)
                      : api().open_web("repo", d.path)).catch(e => fail(e))));
+  // Задача на теці (ассет, шот) — показати, що в ній відкривати: інакше
+  // «відкрити файл задачі» означало б іти шукати його в провіднику.
+  if (d.is_dir && d.local != null) taskFiles(side, d);
 
   // Коментар — без зміни статусу: питання керівнику, «так і задумано» тощо.
   const sec = sideSection(side, "Comments and history");
@@ -3343,7 +3413,10 @@ function renderTaskSide(d) {
   const row = document.createElement("div");
   row.className = "tk-comment-row";
   row.append(ta, send);
-  sec.append(row);
+  // Коментар у Kitsu пише виконавець або керівник — решті поле лише
+  // відмовляло б; стрічку читати можуть усі.
+  if (d.can_comment !== false) sec.append(row);
+  else sec.append(dimLine("Only the assignee or a supervisor can comment on this task."));
 
   for (const e of d.events || []) {
     const ev = document.createElement("div");
@@ -3408,6 +3481,56 @@ async function shotStrip(holder, d) {
     flow.append(row);
   }
   holder.replaceChildren(h, flow);
+}
+
+// Відкрити в провіднику APSVN: теку — саму, файл — у його теці, виділеним.
+async function goExplore(path, isDir) {
+  showView("browse");
+  await openDir(isDir ? path : parentOf(path));
+  if (isDir || !brEntry(path)) return;
+  brPick.clear(); brPick.add(path); brAnchor = path; brSel = path;
+  syncPick();
+  showSelection();
+  const node = [...$("br-list").children].find(n => n.dataset.k === "e:" + path);
+  if (node) node.scrollIntoView({ block: "nearest" });
+}
+
+// Файли в теці задачі — з тими самими «зайняти й відкрити», що в провіднику.
+async function taskFiles(side, d) {
+  const holder = document.createElement("div");
+  holder.className = "side-sec";
+  side.append(holder);
+  let dir = null;
+  try { dir = await api().browse(d.local); } catch (e) { dir = null; }
+  if (!dir || taskSel !== d.id || !holder.isConnected) { holder.remove(); return; }
+  const files = dir.entries.filter(e => e.kind === "file" && e.on_disk && e.openable);
+  if (!files.length) { holder.remove(); return; }
+  const h = document.createElement("div");
+  h.className = "side-h"; h.textContent = "Files";
+  holder.append(h);
+  for (const it of files.slice(0, 8)) {
+    const r = document.createElement("div");
+    r.className = "side-l tk-file";
+    const nm = document.createElement("span");
+    nm.className = "tk-file-nm"; nm.textContent = it.name; nm.title = it.path;
+    r.append(nm, mini(it.binary && !it.lock_mine ? (it.lock_owner ? "👁 Open" : "🔓 Open")
+                                                 : "▶ Open", "",
+                      () => openIt(it, () => loadTasks(true))));
+    holder.append(r);
+  }
+  if (files.length > 8)
+    holder.append(dimLine("…and " + (files.length - 8) + " more — see them in the Explorer"));
+}
+
+// Повернути на доробку (керівник): причина — найважливіше в цьому кроці.
+async function sendBack(d) {
+  const a = await ask({
+    title: "Send “" + d.name + "” back?",
+    lines: ["Tell the artist what needs fixing — it goes into the task in Kitsu."],
+    input: { placeholder: "What needs fixing" },
+    ok: "Send back", danger: true,
+  });
+  if (a.ok) moveTask(d, "retake", a.text);
 }
 
 async function moveTask(d, to, comment) {

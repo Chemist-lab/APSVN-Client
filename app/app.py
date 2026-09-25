@@ -286,6 +286,7 @@ class Api:
         self._tasks = {}                   # задачі — по проєктах
         self._versions = {}                # версії файлу з ключами вмісту
         self._img = srv.ImageCache()       # прев'ю з сервера
+        self._memo = {}                    # (проєкт, що) -> (коли, відповідь)
         sc.ensure_config(CONF_DIR)
 
     # --- проєкти ---
@@ -536,7 +537,11 @@ class Api:
                        "admin": bool(h.get("admin")),
                        # старий образ сервера вмів прев'ю, але не задачі
                        "tasks": any(e.rstrip("/").endswith("/tasks") for e in eps),
-                       "repo": client.where.repo}
+                       "shots": any(e.rstrip("/").endswith("/shots") for e in eps),
+                       "repo": client.where.repo,
+                       # стартові файли шотів — /templates у корені проєкту;
+                       # None, якщо копію знято з підтеки й її тут не видно
+                       "templates": srv.local_path(w[1], "/templates")}
                 ttl = 600
             except srv.ApiError as e:
                 out = {"ok": False, "why": "error", "error": str(e),
@@ -553,7 +558,14 @@ class Api:
         mine = bool(me) and me in people
         full = (os.path.join(wc, local.replace("/", os.sep))
                 if (wc and local is not None) else None)
+        # Крок, до якого ще не дійшла черга (Animation, поки Blocking не
+        # прийняли): не робота на зараз, а «наступне». Кнопок йому немає —
+        # сервер однаково відповів би 403.
+        later = srv.waiting(t)
         return {
+            "entity": t.get("entity"), "step": t.get("step"),
+            "waiting_for": [str(x) for x in (t.get("waiting_for") or [])],
+            "waiting": later,
             "id": t.get("id"), "path": t.get("path"), "local": local,
             "name": t.get("name") or (t.get("path") or "").rsplit("/", 1)[-1],
             "type": t.get("type") or "", "status": status,
@@ -569,14 +581,18 @@ class Api:
             # лише ті кроки, які виконавцю дозволені; решта — справа керівника,
             # і кнопка, що завжди відповідає 403, людину лише дратує
             "moves": [to for to in ("wip", "wfa")
-                      if mine and (status, to) in srv.ARTIST_MOVES],
+                      if mine and not later and (status, to) in srv.ARTIST_MOVES],
         }
 
     def tasks_overview(self, force=False):
-        """Незавершені задачі проєкту: мої — для вкладки, чужі — для позначок.
+        """Усі задачі проєкту: мої — для вкладки, чужі — для позначок.
 
         Чужі теж потрібні: «цей файл призначено olena» людина має бачити ДО
-        того, як спробує його зайняти, а не з відмови сервера.
+        того, як спробує його зайняти, а не з відмови сервера. І завершені
+        теж: сервер вирішує «чий файл» за найближчим рівнем задач, і прийнята
+        задача на самому файлі робить його нічиїм, хоч над ним і висить задача
+        на теці шоту (див. server_api.owners). Без завершених ми показували б
+        «olena» на файлі, який уже може здати будь-хто.
         """
         p = self._proj()
         if not p:
@@ -592,7 +608,7 @@ class Api:
         if client is None:
             return {"ok": False, "tasks": [], "error": srv.OFFLINE}
         try:
-            got = client.tasks(status=srv.ACTIVE)
+            got = client.tasks()
         except srv.ApiError as e:
             # Останній відомий список лишається: позначки «призначено колезі»
             # на хвилину застарілі кращі, ніж зниклі посеред роботи.
@@ -616,6 +632,57 @@ class Api:
         memo = self._tasks.get(self.c.get("id"))
         if memo:
             memo["at"] = 0
+        self._memo.pop((self.c.get("id"), "shots"), None)   # статуси в шотах теж
+
+    def _remembered(self, what, ttl, fetch):
+        """Відповідь сервера, пам'ятана ttl секунд — по проєктах."""
+        key = (self.c.get("id"), what)
+        got = self._memo.get(key)
+        if got and time.time() - got[0] < ttl:
+            return got[1]
+        value = fetch()
+        self._memo[key] = (time.time(), value)
+        return value
+
+    def shot_pipeline(self, entity):
+        """Шот задачі — кроки процесу по черзі: хто на якому і в якому статусі.
+
+        Художникові це відповідь на «чий я наступний і хто після мене»: у
+        Blocking — olena, на перевірці; Animation — ти, чекаєш на неї;
+        Assembly — taras. Порядок кроків береться з процесу (його правлять
+        на сервері — і вже створені шоти живуть за новим порядком), тож
+        кроки сортуємо за процесом, а не за задачами. None — шоту немає або
+        сервер не відповів: панель задачі просто обходиться без смуги.
+        """
+        s = self.server_status()
+        client, prefix = self._client()
+        if client is None or not s.get("ok") or entity in (None, ""):
+            return None
+        try:
+            shots = self._remembered("shots", 40, client.shots).get("shots") or []
+            procs = self._remembered("processes", 600,
+                                     client.processes).get("processes") or []
+        except srv.ApiError:
+            return None
+        shot = next((x for x in shots if x.get("id") == entity), None)
+        if shot is None:
+            return None
+        proc = next((x for x in procs if x.get("name") == shot.get("process")), None)
+        order = {st.get("id"): (i, st.get("name"))
+                 for i, st in enumerate((proc or {}).get("steps") or [])}
+        p = self._proj()
+        rows = []
+        for t in shot.get("tasks") or []:
+            pos, name = order.get(t.get("step"), (999, t.get("type") or "task"))
+            view = self._task_view(t, prefix, s.get("me"), p.get("wc"))
+            rows.append((pos, view.get("id") or 0, {"step": name, "task": view}))
+        rows.sort(key=lambda r: (r[0], r[1]))
+        return {"name": shot.get("name"), "group": shot.get("group"),
+                "kind": shot.get("kind"), "process": shot.get("process"),
+                "folder": srv.local_path(prefix, shot["folder"])
+                if shot.get("folder") else None,
+                "steps": [r[2] for r in rows],
+                "missing": [str(m) for m in shot.get("missing_steps") or []]}
 
     def tasks_done(self):
         """Мої завершені задачі — лише на вимогу, списком не більше 50."""
@@ -1078,6 +1145,7 @@ class Api:
         self._last.pop(pid, None)
         self._srv.pop(pid, None)
         self._tasks.pop(pid, None)
+        self._memo = {k: v for k, v in self._memo.items() if k[0] != pid}
         save_conf(self.conf, dropped={pid})
         if held:
             return ("Project removed from the list. WARNING: %d file(s) are "
@@ -1099,6 +1167,7 @@ class Api:
         # старим паролем вона була б «не пускає» ще довго після виправлення.
         self._srv.pop(p["id"], None)
         self._tasks.pop(p["id"], None)
+        self._memo = {k: v for k, v in self._memo.items() if k[0] != p["id"]}
         try:
             keyring.set_password(KEYRING_SERVICE, key, password or "")
             if keyring.get_password(KEYRING_SERVICE, key) != (password or ""):
@@ -1394,6 +1463,7 @@ class Api:
         self._last.pop(p["id"], None)
         self._srv.pop(p["id"], None)          # новий сервер — нове API
         self._tasks.pop(p["id"], None)
+        self._memo = {k: v for k, v in self._memo.items() if k[0] != p["id"]}
         return out
 
     # --- провідник проєкту ---
@@ -1642,24 +1712,32 @@ class Api:
             raise
 
     def _assigned_elsewhere(self, paths, verb):
-        """Той самий текст, що пише хук м'якого локу, — з відомих нам задач."""
+        """Той самий текст, що пише хук м'якого локу, — з відомих нам задач.
+
+        І за тим самим правилом (server_api.owners — дзеркало серверного), і
+        в тому самому вигляді: «шлях — люди (Тип, Статус; …)», бо на одному
+        файлі може стояти кілька поточних кроків.
+        """
         me = self.c.get("username")
         tasks = ((self._tasks.get(self.c.get("id")) or {}).get("out")
                  or {}).get("tasks") or []
-        lines = []
+        problems = []
         for path in paths:
-            for t in srv.covering(tasks, path):
-                if t["assignees"] and me not in t["assignees"] \
-                        and t["status"] != "done":
-                    lines.append("  %s — %s (%s, %s)" % (
-                        path, ", ".join(t["assignees"]), t["type"] or "task",
-                        t["status_name"]))
-                    break
-        if not lines:
+            people, current = srv.owners(tasks, path)
+            if people and me not in people:
+                problems.append((path, people, current))
+        if not problems:
             return None
-        return ("These files are assigned to someone else:\n" + "\n".join(lines)
-                + "\nOnly the assignee or a supervisor can %s them. Ask a "
-                  "supervisor to reassign the task." % verb)
+        lines = ["These files are assigned to someone else:"]
+        for path, people, current in problems[:10]:
+            what = "; ".join("%s, %s" % (t["type"] or "task", t["status_name"])
+                             for t in current)
+            lines.append("  %s — %s (%s)" % (path, ", ".join(sorted(people)), what))
+        if len(problems) > 10:
+            lines.append("  … and %d more" % (len(problems) - 10))
+        lines.append("Only the assignee or a supervisor can %s them. Ask a "
+                     "supervisor to reassign the task." % verb)
+        return "\n".join(lines)
 
     def do_unlock(self, paths):
         u, p = self._creds()

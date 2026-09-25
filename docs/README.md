@@ -217,6 +217,18 @@ this appears, and nothing else changes.
   (`📋 Retake`); a file assigned to *someone else* shows their name
   (`📋 taras`) — before you try to lock it, not after. Click either to open
   the task.
+* **Steps in order (shots).** A shot goes through the steps of its process
+  one after another — Blocking → Animation → Assembly. A step that waits for
+  the one before it to be accepted is not work for now: it stands apart under
+  **Coming up**, is not counted on the tab, cannot be moved, and your first
+  commit does not start it. Its file shows `📋 Next` while it still belongs to
+  the step before. The task's panel shows the whole shot as a strip — who is
+  on each step, in what state, which step is yours — so *who am I waiting for
+  and who comes after me* has an answer.
+* **Studio templates.** New shots start from the files in `/templates` at the
+  root of the project (the server copies them when shots are created). The
+  Explorer marks that folder, and submitting a change to a template asks
+  first: it becomes the start of every shot made after it.
 * **Send to review with the submit.** When the files you tick belong to a
   task of yours, a checkbox appears next to *keep my locks*:
   *send “sh010.blend” to review*. Your submit note goes to the supervisor with
@@ -363,7 +375,7 @@ part of the root, with the code in `Resources/app`.
 | `explorer.py`   | the Explorer: one folder at a time |
 | `blendthumb.py` | preview embedded in a `.blend` |
 | `imgthumb.py`   | previews for png/jpg/tga/exr |
-| `tests/`        | 642 checks without a server, 21 more (read-only) against the real one |
+| `tests/`        | 657 checks without a server, 24 more (read-only) against the real one |
 
 Settings live in `%APPDATA%\APSVN\config.json`, format 2:
 `{"format":2, "projects":[…], "current":"<id>", …mirror of the current one…}`.
@@ -721,6 +733,24 @@ behind decisions that look odd until you know why.
 * **The clipboard goes through the system, not `navigator.clipboard`.** The
   web one wants document focus and permission, and fails silently exactly
   when a menu item was clicked and the menu has already closed.
+* **“Whose file is it” is the server's rule, mirrored — so finished tasks are
+  read too.** The soft-lock hook decides by the nearest level of tasks: a task
+  on the file itself outranks one on the shot folder above — even an accepted
+  one, which makes the file nobody's — and on that level only the step whose
+  turn it is counts (Blocking, not Animation waiting for it). The marks in the
+  lists follow `server_api.owners`, a copy of `tracker.owners`, so that APSVN
+  never shows *free* for a file the hook will refuse, or a name on a file
+  anybody may submit. That is why the task list carries finished tasks as
+  well: without them an accepted task on a file would be invisible, and the
+  folder's task above it would wrongly claim the file. The explanation APSVN
+  rebuilds when the hook's own text is lost uses the server's newer shape,
+  `path — people (Type, Status; …)`, because one file can have two current
+  steps.
+* **Supervisor tools stay on the website.** Creating shots in bulk (with its
+  plan-first dry run), accepting work or sending it back — the API allows
+  them for supervisors, and the website does them with the context they need
+  (the board, the shots table, the plan). APSVN is the artist's tool and
+  shows no buttons that would only ever be refused.
 * **The launcher is distlib's, not PyInstaller's.** PyInstaller would give a
   7 MB exe — a whole Python inside a wrapper whose only job is to hand over
   control, a third of the weight of the program itself — and antivirus
@@ -955,7 +985,7 @@ decision, not a gap.
 
 ### Tests
 
-Without a server — 642 checks against a temporary `file://` repository (and,
+Without a server — 657 checks against a temporary `file://` repository (and,
 for the studio server, a fake one on `127.0.0.1`); they leave nothing behind:
 
 ```bash
@@ -1008,7 +1038,7 @@ runtime\python.exe tests\test_apsvn.py
   **real `pre-commit` and `pre-lock` hooks** refusing and their text reaching
   the artist intact, and both sides of a real conflict as pictures.
 
-With a real server — 21 more checks, read-only; they take the connection from
+With a real server — 24 more checks, read-only; they take the connection from
 `%APPDATA%\APSVN` (and are skipped without it). **These are the ones that catch
 broken authentication:** a `file://` repository needs no password at all, so
 none of the other suites would ever notice.

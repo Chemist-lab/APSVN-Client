@@ -1441,6 +1441,11 @@ function entryRow(it) {
   }
   if (it.nested) row.append(chip("separate project", ""));
   if (it.link) row.append(chip("shortcut", ""));
+  if (isTemplates(it.path)) {
+    const c = chip("studio templates", "tpl");
+    c.title = "starting files for new shots — the server copies them when shots are created";
+    row.append(c);
+  }
   if (it.new_inside) row.append(chip("new inside", "remote"));
   if (it.status && !["normal", "none", "unversioned"].includes(it.status))
     row.append(chip(it.status_text, it.status));
@@ -1676,8 +1681,8 @@ async function moveInto(paths, folder) {
                                  : "Everything inside those folders goes with them.");
   const theirs = [];
   for (const p of paths) {
-    const t = tasksFor(p).find(x => !x.mine && x.status !== "done" && x.assignees.length);
-    if (t) theirs.push(baseOf(p) + " — " + t.assignees.join(", "));
+    const [people] = ownersOf(p);
+    if (people.size && !people.has(me())) theirs.push(baseOf(p) + " — " + [...people].join(", "));
   }
   if (theirs.length)
     lines.push({ text: "Assigned to someone else: " + theirs.join("; ") +
@@ -1928,6 +1933,13 @@ function dragHint() {
     : "Drag onto a folder to move it.";
 }
 
+// /templates у корені проєкту — стартові файли шотів (сервер, фаза 4).
+const isTemplates = p => !!(srvInfo && srvInfo.templates != null &&
+                            p === srvInfo.templates);
+const underTemplates = p => !!(srvInfo && srvInfo.templates != null &&
+  (srvInfo.templates === "" || p === srvInfo.templates ||
+   p.startsWith(srvInfo.templates + "/")));
+
 function renderFolderSide(it) {
   const side = $("br-side");
   side.innerHTML = "";
@@ -1945,6 +1957,10 @@ function renderFolderSide(it) {
   if (it.mine_inside) facts.push("you have unsubmitted work in here");
   if (it.status === "unversioned") facts.push("new — not in the project yet");
   if (it.moved_from) facts.push("moved here from " + (parentOf(it.moved_from) || "the project root"));
+  if (isTemplates(it.path))
+    facts.push("studio templates: new shots start from these files — the server " +
+               "copies them when a supervisor creates shots. Change one and every " +
+               "shot made after that starts from your version.");
   for (const f of facts) side.append(dimLine(f));
   if (plain) side.append(mini("📂 Open", "", () => openDir(it.path)));
   side.append(mini("🗂 Show in folder", "", () => api().reveal(it.path)));
@@ -2037,7 +2053,7 @@ async function renderSide(it, d) {
     }).catch(() => {});
   }
 
-  const ts = tasksFor(it.path);
+  const ts = levelTasks(it.path);
   if (ts.length) {
     const sec = sideSection(side, "Task");
     for (const t of ts.slice(0, 3)) sec.append(taskLine(t));
@@ -2330,6 +2346,23 @@ $("b-commit").onclick = async () => {
   const msg = $("c-msg").value.trim();
   if (!selected.size) return toast("Tick what you want to submit");
   if (!msg) return toast("Write a short note about what you did — your team will see it in the history");
+
+  // Шаблони — стартова точка кожного майбутнього шоту. Змінити їх можна, але
+  // людина має розуміти, що змінює не свій файл, а початок чужих.
+  const tpl = [...selected].filter(underTemplates);
+  if (tpl.length) {
+    const a = await ask({
+      title: "You are changing the studio templates",
+      factsFirst: true,
+      facts: tpl.slice(0, 8).map(p => [p, ""]),
+      lines: ["New shots start from these files: the server copies them when " +
+              "shots are created.",
+              "What you submit becomes the start of every shot made after it. " +
+              "Shots that already exist are not touched."],
+      ok: "Submit them",
+    });
+    if (!a.ok) return;
+  }
 
   // Видалення текстури чи бібліотеки ламає сцени, що на неї посилаються, — і
   // ламає мовчки: колега відкриє сцену без неї аж завтра. Сервер знає, хто
@@ -2807,7 +2840,11 @@ let srvPid = null;                // для якого проєкту все ц�
 
 const srvOn = () => !!(srvInfo && srvInfo.ok);
 const tasksOn = () => !!(srvInfo && srvInfo.ok && srvInfo.tasks);
-const myTasks = () => ((tasksData && tasksData.tasks) || []).filter(t => t.mine);
+// Мої незавершені. Список приходить з УСІМА задачами проєкту, завершеними
+// теж, — вони потрібні правилу «чий файл» (див. ownersOf).
+const myTasks = () => ((tasksData && tasksData.tasks) || [])
+  .filter(t => t.mine && t.status !== "done");
+const me = () => (tasksData && tasksData.me) || (srvInfo && srvInfo.me) || (st && st.me);
 
 async function initServer() {
   const mine = gen;
@@ -2865,15 +2902,54 @@ function taskSig(path) {
    це людина має знати ще до того, як спробує зайняти файл. Якщо в проєкті
    ввімкнено м'який лок, сервер однаково не дасть — але краще знати наперед,
    ніж дізнатися з відмови. */
-function taskChip(path) {
-  const ts = tasksFor(path);
-  if (!ts.length) return null;
-  return chipOfTask(ts.find(x => x.mine) || ts[0]);
+/* Чий зараз файл — ДЗЕРКАЛО серверного правила (tracker.owners, фаза 4), за
+   яким вирішує й хук м'якого локу. Розійтися з ним не можна: позначка
+   «вільний», а потім відмова хука, — гірше, ніж жодної позначки.
+     * вирішує найближчий рівень: задача на самому файлі важливіша за задачу
+       на теці шоту над ним — навіть прийнята (тоді файл нічий);
+     * на цьому рівні — кроки, до яких дійшла черга (Blocking, а не Animation,
+       що чекає на нього); чекають усі — тоді всі незавершені.
+   -> [люди, поточні задачі]; порожні люди — здати може будь-хто. */
+function ownersOf(path) {
+  const cover = tasksFor(path);                 // найглибші — першими
+  if (!cover.length) return [new Set(), []];
+  const deepest = cover[0].local.length;
+  const level = cover.filter(t => t.local.length === deepest && t.status !== "done");
+  const now = level.filter(t => !(t.waiting_for || []).length);
+  const current = now.length ? now : level;
+  const people = new Set();
+  for (const t of current) for (const a of t.assignees) people.add(a);
+  return [people, current];
 }
 
-function chipOfTask(t) {
+// Незавершені задачі найближчого рівня — для бічних панелей.
+function levelTasks(path) {
+  const cover = tasksFor(path);
+  if (!cover.length) return [];
+  const deepest = cover[0].local.length;
+  return cover.filter(t => t.local.length === deepest && t.status !== "done");
+}
+
+/* Позначка задачі в рядку. Своя — статусом і кольором; чужа — ІМЕНЕМ: саме
+   це людина має знати ще до того, як спробує зайняти файл. Своя, до якої ще
+   не дійшла черга, — «📋 Next»: файл поки що в руках попереднього кроку. */
+function taskChip(path) {
+  const [people, current] = ownersOf(path);
+  const mineNow = current.find(t => t.mine);
+  if (mineNow) return chipOfTask(mineNow);
+  const next = levelTasks(path).find(t => t.mine && t.waiting);
+  if (people.size) return chipOfTask(current[0], people, next);
+  return next ? chipOfTask(next) : null;
+}
+
+function chipOfTask(t, people, next) {
   const c = document.createElement("button");
-  if (t.mine) {
+  if (t.mine && t.waiting) {
+    c.className = "chip task st-next";
+    c.textContent = "📋 Next";
+    c.title = "your " + (t.type || "task") + " step — it starts when " +
+      (t.waiting_for || []).join(", ") + " is accepted. Click to open it.";
+  } else if (t.mine) {
     // Коротко: у рядку поруч ще статус файлу, кнопки й лок, а ім'я файлу
     // важливіше за все це. Тип і термін — у підказці та на вкладці задач.
     c.className = "chip task st-" + t.status;
@@ -2881,11 +2957,12 @@ function chipOfTask(t) {
     c.title = "your task: " + (t.type || "task") + " · " + t.status_name +
       (t.due ? " — due " + t.due : "") + ". Click to open it.";
   } else {
-    const who = t.assignees.join(", ") || "nobody yet";
+    const who = [...(people || new Set(t.assignees))].sort().join(", ") || "nobody yet";
     c.className = "chip task other";
     c.textContent = "📋 " + who;
     c.title = (t.type || "task") + " · " + t.status_name + " — assigned to " + who +
-      ". If the project uses soft locks, only they or a supervisor can lock and submit it.";
+      ". If the project uses soft locks, only they or a supervisor can lock and submit it." +
+      (next ? " Your " + (next.type || "") + " step comes after it." : "");
   }
   c.onclick = ev => { ev.stopPropagation(); openTask(t.id); };
   return c;
@@ -2910,7 +2987,7 @@ function reviewTasks() {
   const out = new Map();
   for (const p of selected) {
     for (const t of tasksData.tasks || []) {
-      if (!t.mine || t.local == null ||
+      if (!t.mine || t.local == null || t.waiting ||
           !["todo", "wip", "retake"].includes(t.status)) continue;
       if (t.local === p || t.local === "" || p.startsWith(t.local + "/") ||
           t.local.startsWith(p + "/"))
@@ -2923,9 +3000,11 @@ function reviewTasks() {
 function renderTaskBadge() {
   $("tab-tasks-btn").classList.toggle("hidden", !tasksOn());
   const mine = myTasks();
-  // рахуємо те, що чекає ДІЇ від людини; «на перевірці» чекає керівника
-  const todo = mine.filter(t => t.status !== "wfa").length;
-  const hot = mine.some(t => t.status === "retake" || t.overdue);
+  // рахуємо те, що чекає ДІЇ від людини: «на перевірці» чекає керівника, а
+  // крок, до якого не дійшла черга, — попереднього кроку (сервер теж не
+  // рахує його в «My tasks»)
+  const todo = mine.filter(t => t.status !== "wfa" && !t.waiting).length;
+  const hot = mine.some(t => !t.waiting && (t.status === "retake" || t.overdue));
   const b = $("tasks-n");
   b.textContent = todo ? String(todo) : "";
   b.classList.toggle("hidden", !todo);
@@ -2938,7 +3017,11 @@ const TASK_GROUPS = [
   ["wip", "In progress", "what you are working on"],
   ["todo", "To do", "not started yet"],
   ["wfa", "Waiting for review", "your supervisor will look at these"],
+  // Крок чекає, поки керівник прийме попередній (Animation — Blocking). Не
+  // робота на зараз: рухати його не можна, перший коміт його не починає.
+  ["next", "Coming up", "starts when the step before it is accepted"],
 ];
+const groupOf = t => t.waiting ? "next" : t.status;
 
 function taskOrder(a, b) {
   if (a.overdue !== b.overdue) return a.overdue ? -1 : 1;
@@ -2983,7 +3066,14 @@ function renderTaskList() {
       due.textContent = (t.overdue ? "overdue — was due " : "due ") + t.due;
       body.append(due);
     }
-    c.append(th, body, chip(t.status_name, "st st-" + t.status));
+    if (t.waiting) {
+      const w = document.createElement("div");
+      w.className = "tk-due";
+      w.textContent = "after " + t.waiting_for.join(", ");
+      body.append(w);
+    }
+    c.append(th, body, t.waiting ? chip("Next", "st st-next")
+                                 : chip(t.status_name, "st st-" + t.status));
     c.onclick = () => openTask(t.id);
     return c;
   };
@@ -2999,7 +3089,7 @@ function renderTaskList() {
 
   const mine = myTasks();
   for (const [status, title, hint] of TASK_GROUPS) {
-    const rows = mine.filter(t => t.status === status).sort(taskOrder);
+    const rows = mine.filter(t => groupOf(t) === status).sort(taskOrder);
     if (!rows.length) continue;
     out.push(head(title, rows.length, hint));
     for (const t of rows) out.push(card(t));
@@ -3011,8 +3101,11 @@ function renderTaskList() {
     out.push(e);
   }
   if (taskDone === null) {
-    const b = mini("Show my finished tasks", "", async () => {
-      try { taskDone = await api().tasks_done(); } catch (e) { return fail(e); }
+    const b = mini("Show my finished tasks", "", () => {
+      // завершені вже приїхали разом з усіма (їх потребує правило «чий
+      // файл»), тож окремий запит зайвий
+      taskDone = ((tasksData && tasksData.tasks) || [])
+        .filter(t => t.mine && t.status === "done").slice(0, 50);
       renderTaskList();
     });
     b.classList.add("tk-more");
@@ -3112,6 +3205,7 @@ function renderTaskSide(d) {
   side.append(stRow);
   fact("type", d.type);
   fact("assigned to", d.assignees.join(", ") || "nobody yet");
+  if (d.waiting) fact("starts after", d.waiting_for.join(", ") + " is accepted");
   if (d.due) fact("due", d.due + (d.overdue ? " — overdue" : ""), d.overdue ? "late" : "");
   fact("set by", d.created_by);
   if (d.gone) fact("file", "no longer in the project", "late");
@@ -3130,7 +3224,19 @@ function renderTaskSide(d) {
     }
   }
   if (acts.children.length) side.append(acts);
-  if (!d.mine)
+  // Шот задачі — кроки по черзі: хто до тебе, хто після. Місце тримаємо
+  // одразу, щоб панель не стрибала, коли відповідь доїде.
+  if (d.entity != null) {
+    const holder = document.createElement("div");
+    holder.className = "side-sec";
+    side.append(holder);
+    shotStrip(holder, d);
+  }
+  if (d.waiting)
+    side.append(dimLine("Not yours to start yet: it opens when " +
+                        d.waiting_for.join(", ") + " is accepted. Your first commit " +
+                        "does not start it, and it cannot be moved until then."));
+  else if (!d.mine)
     side.append(dimLine("Assigned to " + (d.assignees.join(", ") || "nobody") +
                         " — only they or a supervisor move it."));
   else if (d.status === "wfa")
@@ -3142,7 +3248,12 @@ function renderTaskSide(d) {
   // перед відкриттям».
   if (d.local != null) {
     const f = ((st && st.files) || []).find(x => x.path === d.local) || {};
-    if (d.on_disk && d.openable) {
+    if (d.on_disk && d.openable && d.waiting) {
+      // Файл поки що в руках попереднього кроку: займати його не час (сервер
+      // відмовить), а подивитися, як іде Blocking, — саме те, що треба.
+      side.append(mini("👁 Look at it (read-only)", "",
+                       () => act("open_file", [d.local, false], "Opening…")));
+    } else if (d.on_disk && d.openable) {
       const it = { path: d.local, name: d.name, binary: d.binary,
                    lock_mine: f.lock_mine, lock_owner: f.lock_owner };
       side.append(mini(d.binary && !f.lock_mine ? "🔓 Lock and open" : "▶ Open", "",
@@ -3195,6 +3306,50 @@ function renderTaskSide(d) {
     }
     sec.append(ev);
   }
+}
+
+async function shotStrip(holder, d) {
+  let sp = null;
+  try { sp = await api().shot_pipeline(d.entity); } catch (e) { sp = null; }
+  if (!sp || taskSel !== d.id || !holder.isConnected) { holder.remove(); return; }
+  const h = document.createElement("div");
+  h.className = "side-h";
+  const kind = sp.kind === "asset" ? "Asset" : "Shot";
+  // назву процесу — лише коли вона щось додає («Shot sh060 — Shot» нічого)
+  h.textContent = kind + " " + sp.name + (sp.group ? " · " + sp.group : "") +
+    (sp.process && sp.process.toLowerCase() !== kind.toLowerCase()
+      ? " — " + sp.process : "");
+  const flow = document.createElement("div");
+  flow.className = "pipe";
+  for (const s of sp.steps) {
+    const t = s.task;
+    const row = document.createElement("div");
+    row.className = "pipe-step" + (t.id === d.id ? " me" : "");
+    const nm = document.createElement("span");
+    nm.className = "pipe-name"; nm.textContent = s.step;
+    const who = document.createElement("span");
+    who.className = "pipe-who";
+    who.textContent = t.mine ? "you" : (t.assignees.join(", ") || "nobody yet");
+    row.append(nm, t.waiting ? chip("Next", "st st-next")
+                             : chip(t.status_name, "st st-" + t.status), who);
+    if (t.id !== d.id) {
+      row.title = "open this step's task";
+      row.onclick = () => openTask(t.id);
+    }
+    flow.append(row);
+  }
+  for (const m of sp.missing) {
+    const row = document.createElement("div");
+    row.className = "pipe-step missing";
+    row.title = "this step is in the process, but the shot does not have it yet";
+    const nm = document.createElement("span");
+    nm.className = "pipe-name"; nm.textContent = m;
+    const who = document.createElement("span");
+    who.className = "pipe-who"; who.textContent = "not set up yet";
+    row.append(nm, who);
+    flow.append(row);
+  }
+  holder.replaceChildren(h, flow);
 }
 
 async function moveTask(d, to, comment) {

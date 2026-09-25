@@ -112,7 +112,22 @@ else:
     check("сервер уміє задачі (образ перезібрано)", s.get("tasks") is True, s)
     ov = a.tasks_overview(force=True)
     check("задачі проєкту читаються", ov.get("ok") is True,
-          ov.get("error") or "%d незавершених" % len(ov.get("tasks") or []))
+          ov.get("error") or "%d задач (разом із завершеними)" % len(ov.get("tasks") or []))
+    check("сервер уміє шоти й процеси (фаза 4)", s.get("shots") is True, s)
+    cl, _pre = a._client()
+    try:
+        procs = cl.processes().get("processes") or []
+        check("процеси читаються — з кроками по черзі",
+              all(isinstance(p.get("steps"), list) for p in procs),
+              ["%s: %s" % (p.get("name"), " → ".join(x.get("name") for x in p["steps"]))
+               for p in procs])
+    except Exception as e:
+        check("процеси читаються — з кроками по черзі", False, e)
+    try:
+        shots = cl.shots().get("shots")
+        check("шоти проєкту читаються", isinstance(shots, list), "%d шотів" % len(shots))
+    except Exception as e:
+        check("шоти проєкту читаються", False, e)
     try:
         done = a.tasks_done()
         check("завершені задачі читаються", isinstance(done, list), len(done))

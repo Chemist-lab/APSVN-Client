@@ -305,6 +305,15 @@ class Client:
     def comment(self, task_id, text):
         return self.post("tasks/%d/comments" % int(task_id), {"text": text})
 
+    # --- процеси й шоти (фаза 4) -----------------------------------------
+    def processes(self):
+        """Рецепти шотів: кроки по черзі (Blocking → Animation → Assembly)."""
+        return self.get("processes")
+
+    def shots(self):
+        """Шоти проєкту: тека, процес, задачі за кроками, яких кроків бракує."""
+        return self._repo("shots")
+
     # --- файли ------------------------------------------------------------
     def versions(self, path, limit=40):
         return self._repo("versions", {"path": path, "limit": limit})
@@ -436,3 +445,37 @@ def covering(tasks, local):
             out.append(t)
     out.sort(key=lambda t: -len((t.get("local") or "").strip("/")))
     return out
+
+
+def waiting(t):
+    """Задача, до якої ще не дійшла черга: у To do, а попередній крок шоту
+    керівник ще не прийняв. Сервер її не рахує в «My tasks», рухати її
+    художник не може (403), перший коміт її не починає."""
+    return t.get("status") == "todo" and bool(t.get("waiting_for"))
+
+
+def owners(tasks, local):
+    """(люди, задачі) — чий зараз файл. ДЗЕРКАЛО tracker.owners на сервері.
+
+    Правило те саме, за яким вирішує хук м'якого локу, і тримати його треба
+    в згоді з сервером: розбіжність означала б позначку «вільний» у списку, а
+    потім відмову хука (або навпаки — «чужий» файл, який насправді можна):
+      * вирішує НАЙБЛИЖЧИЙ рівень: задача на самому файлі важливіша за задачу
+        на теці шоту над ним — навіть уже прийнята; тоді файл просто нічий.
+        Тому tasks мусять містити й завершені задачі;
+      * на цьому рівні — кроки, до яких дійшла черга (Blocking, а не
+        Animation, що чекає на нього); якщо чекають усі — усі незавершені.
+    Порожній набір людей означає, що файл може здати будь-хто.
+    """
+    cover = covering(tasks, local)                 # найглибші — першими
+    if not cover:
+        return set(), []
+    deepest = len((cover[0].get("local") or "").strip("/"))
+    level = [t for t in cover
+             if len((t.get("local") or "").strip("/")) == deepest
+             and t.get("status") != "done"]
+    current = [t for t in level if not t.get("waiting_for")] or level
+    people = set()
+    for t in current:
+        people.update(t.get("assignees") or [])
+    return people, current

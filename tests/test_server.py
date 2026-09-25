@@ -158,6 +158,29 @@ TASKS = {
          "status_name": "Done", "overdue": False, "name": "sh030.blend",
          "created": 1, "updated": 2},
 }
+# Фаза 4: шот sh040 процесу Shot. На одному файлі два кроки: Blocking (taras,
+# на перевірці) і Animation (olena), що чекає, поки Blocking приймуть. Над ними
+# — задача на теці шоту (andrii). notes.txt має власну, уже прийняту задачу —
+# і тому, за правилом сервера, нічий, хоч над ним і висить задача теки.
+def _t(i, path, typ, status, who, entity=None, step=None, waiting=()):
+    return {"id": i, "repo": "demo", "path": path, "type": typ, "title": "",
+            "status": status, "due": None, "assignees": list(who),
+            "created_by": "andrii", "gone": 0,
+            "status_name": srv.STATUS_NAMES[status], "overdue": False,
+            "name": path.rsplit("/", 1)[-1], "created": 1, "updated": 1,
+            "entity": entity, "step": step, "waiting_for": list(waiting)}
+
+
+TASKS.update({
+    15: _t(15, "/trunk/Shots/sh040/sh040_anim.blend", "Blocking", "wfa", ["taras"], 7, 1),
+    16: _t(16, "/trunk/Shots/sh040/sh040_anim.blend", "Animation", "todo", ["olena"], 7, 2,
+           ["Blocking"]),
+    17: _t(17, "/trunk/Shots/sh040", "Layout", "wip", ["andrii"], 7),
+    18: _t(18, "/trunk/Shots/sh040/notes.txt", "Notes", "done", ["taras"], 7),
+})
+PROCESSES = [{"id": 1, "name": "Shot", "kind": "shot", "steps": [
+    {"id": 1, "name": "Blocking"}, {"id": 2, "name": "Animation"},
+    {"id": 3, "name": "Assembly"}]}]
 EVENTS = {11: [{"at": 100, "user": "andrii", "kind": "created", "old": None,
                 "new": "olena", "comment": None, "rev": None}]}
 MOVES = srv.ARTIST_MOVES
@@ -200,7 +223,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send(200, {"api": 1, "user": USER, "admin": False,
                                     "endpoints": ["/api/v1/repos",
                                                   "/api/v1/tasks",
-                                                  "/api/v1/tasks/<id>"]})
+                                                  "/api/v1/tasks/<id>",
+                                                  "/api/v1/processes",
+                                                  "/api/v1/repos/<repo>/shots"]})
         if p == "/api/v1/tasks" and method == "GET":
             out = list(TASKS.values())
             if q.get("repo"):
@@ -240,6 +265,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     {"at": 300, "user": USER, "kind": "comment", "old": None,
                      "new": None, "comment": body.get("text"), "rev": None})
                 return self._send(200, {"ok": True})
+        if p == "/api/v1/processes":
+            return self._send(200, {"processes": PROCESSES, "modes": ["new", "same", "none"]})
+        if p == "/api/v1/repos/demo/shots":
+            # задачі навмисно не в порядку кроків — порядок має дати процес
+            return self._send(200, {"repo": "demo", "shots": [{
+                "id": 7, "name": "sh040", "group": "sq010", "kind": "shot",
+                "folder": "/trunk/Shots/sh040", "process": "Shot",
+                "missing_steps": ["Assembly"],
+                "tasks": [TASKS[16], TASKS[17], TASKS[15]]}]})
         if p == "/api/v1/repos/demo/preview":
             rev = int(q["rev"]) if q.get("rev") else None
             img = PREVIEWS.get((q.get("path"), rev))
@@ -359,7 +393,7 @@ except srv.ApiError as e:
 
 print("--- клієнт: задачі ---")
 t = client.tasks(status=srv.ACTIVE)
-check("активні задачі проєкту", sorted(x["id"] for x in t["tasks"]) == [11, 12, 13],
+check("активні задачі проєкту", sorted(x["id"] for x in t["tasks"]) == [11, 12, 13, 15, 16, 17],
       [x["id"] for x in t["tasks"]])
 try:
     client.set_status(12, "wfa")
@@ -413,7 +447,8 @@ check("відповідь сервера пам'ятається — други�
 
 ov = api.tasks_overview(force=True)
 by = {t["id"]: t for t in ov.get("tasks", [])}
-check("задачі прочитано", ov.get("ok") and set(by) == {11, 12, 13}, ov.get("error"))
+check("прочитано ВСІ задачі — і завершені (їх потребує правило «чий файл»)",
+      ov.get("ok") and set(by) == {11, 12, 13, 14, 15, 16, 17, 18}, ov.get("error"))
 check("шлях задачі переведено в шлях копії",
       by[11]["local"] == "Shots/sh010.blend", by[11]["local"])
 check("задача поза копією (гілка) — local None", by[13]["local"] is None)
@@ -430,6 +465,47 @@ check("пояснення «чий файл» — у формі хука й ли
       why and "These files are assigned to someone else:" in why
       and "Shots/sh020/light.blend — taras (Lighting, In progress)" in why
       and "sh010" not in why, why)
+
+print("--- фаза 4: черговість кроків і «чий файл» — як на сервері ---")
+check("крок, що чекає на попередній, — «наступний», а не робота",
+      by[16]["waiting"] is True and by[16]["waiting_for"] == ["Blocking"], by[16])
+check("…і кнопок йому не дають (сервер відповів би 403)", by[16]["moves"] == [],
+      by[16]["moves"])
+check("крок, до якого дійшла черга, — звичайна задача",
+      by[15]["waiting"] is False and by[15]["entity"] == 7 and by[15]["step"] == 1)
+T = ov["tasks"]
+people, cur = srv.owners(T, "Shots/sh040/sh040_anim.blend")
+check("два кроки на файлі: вирішує той, до якого дійшла черга (Blocking — taras)",
+      people == {"taras"} and [t["id"] for t in cur] == [15], (people, [t["id"] for t in cur]))
+people, cur = srv.owners(T, "Shots/sh040/other.png")
+check("файл без своєї задачі — задача теки шоту (andrii)", people == {"andrii"}, people)
+people, cur = srv.owners(T, "Shots/sh040/notes.txt")
+check("прийнята задача на самому файлі робить його нічиїм, хоч над ним задача теки",
+      people == set() and cur == [], (people, cur))
+only_waiting = [dict(by[16], local="x.blend"), dict(by[15], local="y.blend")]
+people, cur = srv.owners(only_waiting, "x.blend")
+check("якщо на рівні чекають усі — рахуються всі незавершені",
+      people == {"olena"} and [t["id"] for t in cur] == [16], people)
+two_now = [dict(by[15], local="z.blend"),
+           dict(by[12], local="z.blend", type="Lighting", status="todo", status_name="To do",
+                waiting_for=[])]
+api._tasks["p1"]["out"]["tasks"].extend(two_now)
+why = api._assigned_elsewhere(["z.blend"], "commit")
+check("пояснення в новому форматі сервера: «шлях — люди (Тип, Статус; …)»",
+      why and "  z.blend — taras (Blocking, Review; Lighting, To do)" in why, why)
+del api._tasks["p1"]["out"]["tasks"][-2:]
+sp = api.shot_pipeline(7)
+check("шот задачі: кроки за порядком процесу, а не як прийшли",
+      sp and [s_["step"] for s_ in sp["steps"]][:2] == ["Blocking", "Animation"], sp)
+check("…крок без місця в процесі (задача теки) — наприкінці",
+      sp and sp["steps"][-1]["task"]["id"] == 17, sp and [s_["task"]["id"] for s_ in sp["steps"]])
+check("…свій крок позначено, і видно, на що він чекає",
+      sp and sp["steps"][1]["task"]["mine"] and sp["steps"][1]["task"]["waiting"])
+check("…кроки, яких шоту бракує, названо", sp and sp["missing"] == ["Assembly"], sp)
+check("…тека шоту — у шляхах копії", sp and sp["folder"] == "Shots/sh040", sp)
+check("шоту немає — None, без винятку", api.shot_pipeline(999) is None)
+check("шаблони /templates поза копією з /trunk — не показуємо",
+      api.server_status().get("templates") is None, api.server_status())
 
 print("--- Api: відмова лока без тексту хука пояснюється задачею ---")
 real_lock = sc.lock
@@ -571,10 +647,11 @@ check("прев'ю — порожньо", api2.previews([{"path": "a.blend", "re
 check("перевірка видалення — порожньо", api2.used_by_many(["a.png"]) == {})
 check("панель файлу — ok=False", api2.file_links("a.blend") == {"ok": False})
 
+known_before = len(api._tasks["p1"]["out"]["tasks"])
 server.shutdown()
 check("сервер зник посеред роботи: задачі лишаються з помилкою",
       (lambda o: o.get("ok") is False and o.get("error") and
-       len(o.get("tasks") or []) == 3)(api.tasks_overview(force=True)))
+       len(o.get("tasks") or []) == known_before > 0)(api.tasks_overview(force=True)))
 
 
 # ------------------------------------------------ 4. відмова хука: текст

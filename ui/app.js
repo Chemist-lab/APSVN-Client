@@ -1688,8 +1688,7 @@ async function moveInto(paths, folder) {
   }
   if (theirs.length)
     lines.push({ text: "Assigned to someone else: " + theirs.join("; ") +
-                 ". If the project uses soft locks, the server will not accept " +
-                 "this move from you.", warn: true });
+                 " — they may be working on it right now.", warn: true });
   let ub = {};
   const files = paths.filter(p => !dirs.includes(p));
   if (files.length && srvOn()) {
@@ -3021,7 +3020,7 @@ function chipOfTask(t, people, next) {
     c.className = "chip task other";
     c.textContent = "📋 " + who;
     c.title = (t.type || "task") + " · " + t.status_name + " — assigned to " + who +
-      ". If the project uses soft locks, only they or a supervisor can lock and submit it." +
+      ". You can still open the file; whatever you change is recorded in your name." +
       (next ? " Your " + (next.type || "") + " step comes after it." : "");
   }
   c.onclick = ev => { ev.stopPropagation(); openTask(t.id); };
@@ -3072,43 +3071,30 @@ function renderTaskBadge() {
   $("tab-tasks-btn").title = hot ? "some of your tasks were sent back, or are overdue" : "";
 }
 
-// [ключ, назва, підказка для своїх, підказка для всього проєкту]
 const TASK_GROUPS = [
-  ["retake", "Sent back", "your supervisor asked for changes", "sent back for changes"],
-  ["wip", "In progress", "what you are working on", "being worked on"],
-  ["todo", "To do", "not started yet", "not started yet"],
-  ["wfa", "Waiting for review", "your supervisor will look at these",
-   "waiting for a supervisor"],
+  ["retake", "Sent back", "your supervisor asked for changes"],
+  ["wip", "In progress", "what you are working on"],
+  ["todo", "To do", "not started yet"],
+  ["wfa", "Waiting for review", "your supervisor will look at these"],
   // Крок чекає, поки керівник прийме попередній (Animation — Blocking). Не
   // робота на зараз: рухати його не можна, перший коміт його не починає.
   // Статуси, яких у нас немає: у Kitsu студія заводить свої (Ready, Approved…).
   // Раніше такі задачі не потрапляли в жодну групу — тобто зникали зі списку.
-  ["other", "Other statuses", "as they are named in Kitsu", "as they are named in Kitsu"],
-  ["next", "Coming up", "starts when the step before it is accepted",
-   "starts when the step before it is accepted"],
+  ["other", "Other statuses", "as they are named in Kitsu"],
+  ["next", "Coming up", "starts when the step before it is accepted"],
 ];
 const KNOWN_GROUPS = new Set(["retake", "wip", "todo", "wfa"]);
 const groupOf = t => t.waiting ? "next" : KNOWN_GROUPS.has(t.status) ? t.status : "other";
 
-/* Свої — або всі задачі проєкту. Дивитися проєкт і відкривати файли будь-якої
-   задачі може кожен, хто в проєкті: усе, що він змінить, однаково
-   записується від його імені, а що саме йому можна, вирішує сервер (права
-   Kitsu). Вибір пам'ятаємо. */
-let taskScope = null;               // "mine" | "all"; null — ще не прочитали з налаштувань
+/* Задачі — лише свої; сам проєкт — усім (так вирішила студія 2026-09-25).
+   Дерево й файли будь-кому з проєкту відкриває вкладка Explorer, хоч би на
+   кого була задача: усе змінене однаково записується від імені людини. Чужа
+   задача видна там позначкою на файлі й відкривається з неї, а що з нею
+   можна зробити, вирішує сервер (права Kitsu). Дошка всіх задач — на сайті.
+   (222e671 мав тут перемикач «Whole project»; його налаштування tasks_all
+   тепер просто ніхто не читає.) */
 let taskQuery = "";
 
-function scopeNow() {
-  if (taskScope === null) taskScope = pref("tasks_all") ? "all" : "mine";
-  return taskScope;
-}
-
-document.querySelectorAll("#tasks-scope button").forEach(b => b.onclick = () => {
-  taskScope = b.dataset.scope;
-  taskDone = null;
-  api().set_pref("tasks_all", taskScope === "all").catch(() => {});
-  if (st && st.prefs) st.prefs.tasks_all = taskScope === "all";
-  renderTaskList();
-});
 $("tasks-q").oninput = () => { taskQuery = $("tasks-q").value; renderTaskList(); };
 
 function taskHit(t) {
@@ -3127,12 +3113,9 @@ function taskOrder(a, b) {
 
 function renderTaskList() {
   const box = $("tasks-list");
-  const scope = scopeNow();
   // Назва проєкту й так угорі, у випадайці: тут вона лише забирала місце
-  // в рядку, де вже стоять перемикач, фільтр і дві кнопки.
+  // в рядку, де вже стоять фільтр і дві кнопки.
   $("tasks-title").textContent = "Tasks";
-  document.querySelectorAll("#tasks-scope button").forEach(
-    b => b.classList.toggle("on", b.dataset.scope === scope));
   const err = tasksData && !tasksData.ok && tasksData.error;
   $("tasks-warn").textContent = err ? "Could not refresh the tasks: " + err : "";
   $("tasks-warn").classList.toggle("hidden", !err);
@@ -3173,14 +3156,6 @@ function renderTaskList() {
       w.textContent = "after " + t.waiting_for.join(", ");
       body.append(w);
     }
-    if (scope === "all") {
-      // у всьому проєкті головне питання — «хто на цьому»
-      const who = document.createElement("div");
-      who.className = "tk-who";
-      who.textContent = t.assignees.length ? "👤 " + t.assignees.join(", ") : "nobody yet";
-      body.append(who);
-      if (t.mine) c.classList.add("mine");
-    }
     c.append(th, body, t.waiting ? chip("Next", "st st-next")
                                  : chip(t.status_name, "st st-" + t.status));
     c.onclick = () => openTask(t.id);
@@ -3197,28 +3172,25 @@ function renderTaskList() {
   };
 
   const all = (tasksData && tasksData.tasks) || [];
-  const pool = all.filter(t => t.status !== "done" && (scope === "all" || t.mine))
-                  .filter(taskHit);
-  for (const [status, title, hint, hintAll] of TASK_GROUPS) {
+  const pool = all.filter(t => t.status !== "done" && t.mine).filter(taskHit);
+  for (const [status, title, hint] of TASK_GROUPS) {
     const rows = pool.filter(t => groupOf(t) === status).sort(taskOrder);
     if (!rows.length) continue;
-    out.push(head(title, rows.length, scope === "all" ? hintAll : hint));
+    out.push(head(title, rows.length, hint));
     for (const t of rows) out.push(card(t));
   }
   if (!pool.length) {
     const e = document.createElement("div");
     e.className = "empty tasks-empty";
     e.textContent = taskQuery.trim() ? "Nothing matches “" + taskQuery.trim() + "”"
-      : scope === "all" ? "No tasks in this project yet"
       : "Nothing assigned to you in this project right now 🎉";
     out.push(e);
   }
   if (taskDone === null) {
-    const b = mini(scope === "all" ? "Show finished tasks" : "Show my finished tasks", "", () => {
+    const b = mini("Show my finished tasks", "", () => {
       // завершені вже приїхали разом з усіма (їх потребує правило «чий
       // файл»), тож окремий запит зайвий
-      taskDone = all.filter(t => t.status === "done" && (scope === "all" || t.mine))
-                    .slice(0, 200);
+      taskDone = all.filter(t => t.status === "done" && t.mine).slice(0, 200);
       renderTaskList();
     });
     b.classList.add("tk-more");

@@ -153,14 +153,10 @@
         <div class="tasks-left">
           <div class="crumbs">
             <span id="tasks-title" class="tasks-title">Tasks</span>
-            <!-- Свої — або всі задачі проєкту: дивитися проєкт і відкривати
-                 файли може кожен, хто в ньому; що кому дозволено змінити,
-                 вирішує сервер (права Kitsu). -->
-            <span class="seg" id="tasks-scope">
-              <button data-scope="mine" class="on">Mine</button>
-              <button data-scope="all">Whole project</button>
-            </span>
-            <input id="tasks-q" class="tasks-q" placeholder="filter: name, type, person" spellcheck="false">
+            <!-- Задачі — лише свої. Сам проєкт (усе дерево й файли) відкритий
+                 кожному, хто в ньому, — це вкладка Explorer; дошка всіх задач
+                 — на сайті студії (Project board). -->
+            <input id="tasks-q" class="tasks-q" placeholder="filter: name, type, folder" spellcheck="false">
             <span class="spacer"></span>
             <button id="tasks-web" class="mini" title="every task of yours, in all projects, on the studio website">🌐 All my tasks</button>
             <button id="tasks-board" class="mini" title="the whole project's board on the studio website">Project board</button>

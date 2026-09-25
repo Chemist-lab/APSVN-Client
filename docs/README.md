@@ -209,25 +209,27 @@ If the project lives on the studio's own server (svn-native — an address like
 with the same user name and password. On any other Subversion server none of
 this appears, and nothing else changes.
 
-* **Tasks** — a tab with two views. **Mine**: what is assigned to you in
-  this project, grouped by what to do about it — *Sent back* (your supervisor
-  asked for changes — their note is right there in the task), *In progress*,
-  *To do*, *Waiting for review*, and statuses the studio added in Kitsu
-  under *Other statuses*. **Whole project**: every task of the project, with
-  who is on it — anybody who is in the project can look through it and open
-  the files of any task; a filter finds a task by name, type or person.
-  From a task: **▶ Start working**, **✔ Send to review** (with an optional
-  note for your supervisor), **↩ Back to work**, comments, and the files —
-  lock and open, show in folder, history, **📂 Open in the Explorer tab**; a
-  task on a folder (an asset, a shot) lists the files inside it with an
-  **Open** button each. Which status buttons appear is decided by the
-  server, by Kitsu's rules: an artist changes their own tasks, a supervisor
-  any task, with any Kitsu status — so there are no buttons that would only
-  ever be refused. Whatever anybody changes is written in their name.
+* **Tasks** — a tab listing what is assigned to *you* in this project,
+  grouped by what to do about it: *Sent back* (your supervisor asked for
+  changes — their note is right there in the task), *In progress*, *To do*,
+  *Waiting for review*, and statuses the studio added in Kitsu under *Other
+  statuses*; a filter finds one by name, type or folder. From a task:
+  **▶ Start working**, **✔ Send to review** (with an optional note for your
+  supervisor), **↩ Back to work**, comments, and the files — lock and open,
+  show in folder, history, **📂 Open in the Explorer tab**; a task on a
+  folder (an asset, a shot) lists the files inside it with an **Open**
+  button each. Which status buttons appear is decided by the server, by
+  Kitsu's rules — so there are no buttons that would only ever be refused.
+* **Tasks are yours; the project is everybody's.** The Tasks tab lists only
+  your own tasks. The project itself — every folder and every file — is open
+  to everybody who is in it, in the Explorer tab, whoever the task is
+  assigned to: anything anybody changes is recorded in their name anyway.
+  The board of everybody's tasks is on the studio website (**Project
+  board**).
 * **Tasks in the file lists.** A file of *your* task shows its status
   (`📋 Retake`); a file assigned to *someone else* shows their name
-  (`📋 taras`) — before you try to lock it, not after. Click either to open
-  the task.
+  (`📋 taras`), so you know they may be working on it — you can still open
+  it. Click either to open the task.
 * **Steps in order (shots).** A shot goes through the steps of its process
   one after another — Blocking → Animation → Assembly. A step that waits for
   the one before it to be accepted is not work for now: it stands apart under
@@ -267,11 +269,13 @@ this appears, and nothing else changes.
 
 #### “These files are assigned to someone else”
 
-If the project uses **soft locks**, a file that belongs to a task only its
-assignee (or a supervisor) may lock and submit. Everybody else gets the
-server's refusal — in a window, word for word as the server wrote it: whose
-file it is and who to ask. That is a studio rule, not a broken network, and
-APSVN says so rather than “something went wrong”.
+The studio server no longer has **soft locks** (tasks moved to Kitsu):
+anybody in the project may open, lock and submit any file, and the name on
+it is a heads-up, not a barrier. An older server that still has them lets
+only the assignee (or a supervisor) lock and submit such a file; everybody
+else gets the server's refusal — in a window, word for word as the server
+wrote it: whose file it is and who to ask. That is a studio rule, not a
+broken network, and APSVN says so rather than “something went wrong”.
 
 ### Several projects
 
@@ -767,8 +771,9 @@ behind decisions that look odd until you know why.
   `path — people (Type, Status; …)`, because one file can have two current
   steps.
 * **What a person may do with a task, the server says — APSVN does not
-  guess.** Since the whole project's tasks are visible to everybody in it,
-  guessing on somebody else's task would mean buttons that refuse. The
+  guess.** A colleague's task opens from the name on its file, and a
+  supervisor may change any task, so guessing would mean buttons that refuse
+  or buttons that are missing. The
   Kitsu-era server answers with the statuses this person may set on this
   task (`task.moves`), whether they are a supervisor, and whether they are
   linked to a person in Kitsu at all; APSVN draws exactly those, with Kitsu's

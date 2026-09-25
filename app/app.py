@@ -287,6 +287,7 @@ class Api:
         self._versions = {}                # версії файлу з ключами вмісту
         self._img = srv.ImageCache()       # прев'ю з сервера
         self._memo = {}                    # (проєкт, що) -> (коли, відповідь)
+        self._head = 0                     # скільки разів був «Get latest»
         sc.ensure_config(CONF_DIR)
 
     # --- проєкти ---
@@ -329,10 +330,37 @@ class Api:
             raise sc.SvnError("The project folder is not available right now.")
         return p["wc"]
 
+    def _take(self, why, patience):
+        """Узяти замок дій: зачекати, поки його тримає КОРОТКЕ читання, але
+        не ставати в чергу за довгою дією.
+
+        Замок тримає не лише передача. Кожні 10 с state() звіряється з
+        сервером (`svn status -u` по мережі) і тримає його, поки мережа
+        відповідає. Раніше замок тут не чекали зовсім — і «Get latest»,
+        натиснутий посеред фонової звірки, казав «Please wait» і не робив
+        нічого: людина бачила старий стан, «інтерфейс не оновлюється».
+        tests/test_refresh.py відтворює це без удачі.
+
+        А ось за довгою дією (передача, здача) чекати немає сенсу: це хвилини,
+        і друга дія в черзі за нею була б сюрпризом. Прапорець busy
+        відрізняє одне від другого, і його перевіряємо щоразу, поки чекаємо, —
+        передача могла початися, поки ми стояли.
+        """
+        deadline = time.monotonic() + patience
+        while True:
+            if self.busy.is_set():
+                raise sc.SvnError(why)
+            if self._lock.acquire(timeout=0.2):
+                if self.busy.is_set():            # хтось устиг між перевірками
+                    self._lock.release()
+                    raise sc.SvnError(why)
+                return
+            if time.monotonic() > deadline:
+                raise sc.SvnError(why)
+
     def _guard(self, fn, *a, **kw):
-        """Довга операція: один одночасно, з прапорцем зайнятості."""
-        if not self._lock.acquire(blocking=False):
-            raise sc.SvnError("Please wait — the previous action is still running.")
+        """Довга операція: одна одночасно, з прапорцем зайнятості."""
+        self._take("Please wait — the previous action is still running.", 120)
         self.busy.set()
         self._prog = None
         try:
@@ -340,6 +368,17 @@ class Api:
         finally:
             self._prog = None
             self.busy.clear()
+            self._lock.release()
+
+    def _reading(self, fn, *a, **kw):
+        """Читання з копії (вміст коміту, історія файлу) — під замком, щоб не
+        перетнутися з передачею, але БЕЗ прапорця «іде передача». Інакше
+        секундне читання історії вдавало б довгу дію, і натиснутий у ту мить
+        «Get latest» знову отримав би відмову замість оновлення."""
+        self._take("Please wait — a transfer is in progress.", 60)
+        try:
+            return fn(*a, **kw)
+        finally:
             self._lock.release()
 
     def progress(self):
@@ -794,7 +833,10 @@ class Api:
         змінюється, тож її ключ живе хвилину. Відсутність картинки не
         запам'ятовуємо зовсім: «готується» за хвилину стане готовою.
         """
-        stamp = rev if rev is not None else "head-%d" % (time.time() // 60)
+        # «Остання» версія живе хвилину — або до наступного «Get latest»
+        # (_head): після нього найновіша вже інша, і стара картинка збрехала б.
+        stamp = rev if rev is not None else "head-%d-%d" % (self._head,
+                                                            time.time() // 60)
         key = ("p", client.where.api, client.where.repo, rpath, stamp)
         if self._img.has(key):
             return self._img.get(key)
@@ -1251,8 +1293,23 @@ class Api:
         u, p = self._creds()
         last = self._last.get(self.c.get("id")) or {}
         total = last.get("incoming_n") or None
-        return self._guard(sc.update, self._wc(), username=u, password=p,
-                           progress=self._tick, total=total)
+        try:
+            return self._guard(sc.update, self._wc(), username=u, password=p,
+                               progress=self._tick, total=total)
+        finally:
+            self._after_update()
+
+    def _after_update(self):
+        """Після «Get latest» застаріле все, що рахувалося від старої копії.
+
+        Задачі (колега міг здати й відправити на перевірку), шоти, версії
+        файлів, картинки «найновішої версії» — їх пам'ятали хвилинами, і
+        людина, що щойно натиснула «Get latest», бачила б учорашнє. Навіть
+        коли оновлення впало посередині: частина файлів уже нова.
+        """
+        self._tasks_stale()
+        self._versions.clear()
+        self._head += 1
 
     def do_commit(self, paths, message, keep_locks=None, review=None):
         """Здати вибране. review — id задач, які після здачі піти на перевірку.
@@ -1837,8 +1894,8 @@ class Api:
     def revision_files(self, rev):
         """Список того, що змінилося в коміті — для правої панелі History."""
         u, p = self._creds()
-        return self._guard(sc.revision_files, self._wc(), rev,
-                           username=u, password=p)
+        return self._reading(sc.revision_files, self._wc(), rev,
+                             username=u, password=p)
 
     def get_log(self):
         u, p = self._creds()
@@ -1874,7 +1931,7 @@ class Api:
                 "binary": bool(f.get("binary")) or path.lower().endswith(sc.BINARY_EXT),
             }
 
-        return self._guard(work)
+        return self._reading(work)
 
     def restore_version(self, path, rev):
         wc, (u, p) = self._wc(), self._creds()

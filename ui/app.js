@@ -841,7 +841,7 @@ function fileRow(f) {
         lb.className = "lockbtn";
         if (f.lock_stale) {
           lb.classList.add("stale"); lb.textContent = "your lock was removed — get latest";
-          lb.onclick = () => act("do_update", [], "Getting latest…");
+          lb.onclick = () => getLatest("Getting latest…");
         } else if (f.lock_mine) {
           lb.classList.add("mine"); lb.textContent = "🔒 mine · release";
           lb.onclick = () => act("do_unlock", [[f.path]], "Releasing…");
@@ -1462,7 +1462,7 @@ function entryRow(it) {
     lb.className = "lockbtn";
     if (it.lock_stale) {
       lb.classList.add("stale"); lb.textContent = "lock removed";
-      lb.onclick = ev => { ev.stopPropagation(); act("do_update", [], "Getting latest…"); };
+      lb.onclick = ev => { ev.stopPropagation(); getLatest("Getting latest…"); };
     } else if (it.lock_mine) {
       lb.classList.add("mine"); lb.textContent = "🔒 mine";
       lb.onclick = ev => {
@@ -2203,7 +2203,8 @@ async function folderLock(it) {
 
 /* --- дії -------------------------------------------------------------- */
 
-async function act(method, args, text) {
+// after — що оновити потім (типово — стан і поточний вигляд).
+async function act(method, args, text, after) {
   busy(true, text);
   let failed = null;
   try {
@@ -2214,7 +2215,55 @@ async function act(method, args, text) {
   }
   busy(false);
   if (failed) fail(failed);           // вікно відмови — вже без «Working…» під ним
-  await refresh();
+  await (after || refresh)();
+}
+
+/* «Get latest» — і після нього ВСЕ. Раніше оновлювались лише список змін і
+   поточна тека провідника; історія проєкту, інші розгорнуті гілки дерева,
+   задачі, картинки найновіших версій і відкрита історія файлу показували
+   стан ДО оновлення, доки людина сама кудись не клацне. */
+function getLatest(text) {
+  return act("do_update", [], text || "Getting the latest from the server…",
+             refreshEverything);
+}
+
+async function refreshEverything() {
+  lastFilesSig = null;               // список змін — наново, навіть якщо дані ті самі
+  await refresh();                   // стан, шапка, поточна тека провідника
+  if (!st || !st.configured || st.broken) return;
+  // Картинка «найновішої версії» (ключ без ревізії) після оновлення вже
+  // інша; картинки конкретних ревізій не змінюються ніколи — їх лишаємо.
+  for (const k of [...THUMBS.keys()]) if (k.endsWith("@")) THUMBS.delete(k);
+  // Провідник: усе, що пам'яталося про теки, — з до оновлення.
+  brCache.clear();
+  const jobs = [refreshTreeBranches()];
+  if (brDir && view !== "browse") jobs.push(openDir(brPath, { history: true }));
+  if (view === "log") jobs.push(loadLog(true));
+  if (view === "file" && hist) jobs.push(openHistory(hist.path));
+  if (tasksOn()) {
+    jobs.push(loadTasks(true).then(() => {
+      if (view === "tasks" && taskSel) openTask(taskSel);
+    }));
+  }
+  await Promise.all(jobs);
+}
+
+// Розгорнуті гілки дерева — наново, на місці: поки не приїде свіже, лишається
+// старе (а не «reading…» на кожній гілці). Теку, що зникла з оновленням,
+// дерево згортає.
+async function refreshTreeBranches() {
+  const open = [...treeOpen].filter(p => p !== brPath && treeKids[p]);
+  await Promise.all(open.map(async p => {
+    try {
+      const d = await api().browse(p);
+      brCache.set(d.path, d);
+      treeKids[p] = d.entries.filter(e => e.kind === "dir" && !e.link);
+    } catch (e) {
+      treeOpen.delete(p);
+      delete treeKids[p];
+    }
+  }));
+  if (brDir) renderTree();
 }
 
 // Людина має бачити, ЩО саме зараз приїде: «оновитись» усліпу над текою,
@@ -2227,7 +2276,7 @@ $("b-update").onclick = async () => {
   if (!list.length || pref("update_silent")) {
     // Нічого не приїде (або людина вже попросила не питати) — просто тягнемо.
     // Оновлення на порожньому не забороняємо: це ще й починка копії після збою.
-    return act("do_update", [], "Getting the latest from the server…");
+    return getLatest();
   }
   const facts = list.slice(0, 12).map(
     x => [x.path, INCOMING_WORD[x.kind] || x.kind]);
@@ -2243,7 +2292,7 @@ $("b-update").onclick = async () => {
     remember: "Just get it — stop showing me this list",
   });
   if (a.ok && a.remember) api().set_pref("update_silent", true).catch(() => {});
-  if (a.ok) act("do_update", [], "Getting the latest from the server…");
+  if (a.ok) getLatest();
 };
 /* --- меню рідкісних дій -------------------------------------------------
    Кнопки лишились ті самі й з тими самими id, тож їхні обробники нижче не
@@ -2329,7 +2378,8 @@ document.addEventListener("keydown", e => {
 $("b-open").onclick = () => api().open_folder();
 $("b-rescue").onclick = () => api().open_rescue();
 $("b-remote").onclick = async () => {
-  busy(true, "Checking with the server…"); await refresh(); busy(false);
+  busy(true, "Checking with the server…");
+  try { await refreshEverything(); } finally { busy(false); }
 };
 $("b-fix").onclick = () => {
   ask({
@@ -2585,17 +2635,23 @@ function ago(str) {
   return n + " " + unit + (n === 1 ? "" : "s") + " ago";
 }
 
-async function loadLog() {
+// keep — оновити на місці (після «Get latest»): без «Reading history…», з тією
+// самою прокруткою і тим самим вибраним комітом, якщо він є й далі.
+async function loadLog(keep) {
   const box = $("log");
-  box.innerHTML = "<div class='empty'>Reading history…</div>";
-  try { logRows = await api().get_log(); } catch (e) { logRows = []; }
-  box.innerHTML = "";
+  const quiet = keep && logRows.length > 0;
+  if (!quiet) box.innerHTML = "<div class='empty'>Reading history…</div>";
+  let rows;
+  try { rows = await api().get_log(); } catch (e) { rows = []; }
+  logRows = rows;
   if (!logRows.length) {
     box.innerHTML = "<div class='empty'>No history yet</div>";
     $("hist-side").innerHTML =
       "<div class='br-empty'>Nothing has been submitted yet</div>";
     return;
   }
+  const top = box.scrollTop;
+  box.innerHTML = "";
   for (const e of logRows) {
     const d = document.createElement("div");
     d.className = "le";
@@ -2611,7 +2667,9 @@ async function loadLog() {
     d.onclick = () => pickCommit(e.rev);
     box.append(d);
   }
-  pickCommit(logRows[0].rev);           // щось має бути показано одразу
+  if (quiet) box.scrollTop = top;
+  const again = quiet && logRows.some(r => String(r.rev) === String(logRev));
+  pickCommit(again ? logRev : logRows[0].rev);   // щось має бути показано одразу
 }
 
 function pickCommit(rev) {

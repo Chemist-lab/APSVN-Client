@@ -17,7 +17,12 @@ Nothing to install — Python and svn live inside the folder.
 
 * **⬇ Get latest** — pick up your team's newest work. Press it every morning.
   If the yellow badge at the top says *N new commits*, that is exactly the
-  moment to press it, even when the file list is empty.
+  moment to press it, even when the file list is empty. Afterwards
+  **everything** is re-read: the list of changes, the Explorer with every open
+  branch of its tree, the project history (the commit you were looking at
+  stays selected), your tasks and the task you have open, and the pictures of
+  the newest versions. **⟳ Server** at the top does the same without
+  downloading anything.
 * **🔓 Lock** — until a file is locked, it sits on disk read-only and Blender
   will not let you save over it. That is on purpose: two animators cannot
   quietly overwrite each other. Press *lock* and the file becomes yours and
@@ -375,7 +380,7 @@ part of the root, with the code in `Resources/app`.
 | `explorer.py`   | the Explorer: one folder at a time |
 | `blendthumb.py` | preview embedded in a `.blend` |
 | `imgthumb.py`   | previews for png/jpg/tga/exr |
-| `tests/`        | 657 checks without a server, 24 more (read-only) against the real one |
+| `tests/`        | 667 checks without a server, up to 24 more (read-only) against the real one |
 
 Settings live in `%APPDATA%\APSVN\config.json`, format 2:
 `{"format":2, "projects":[…], "current":"<id>", …mirror of the current one…}`.
@@ -794,6 +799,23 @@ behind decisions that look odd until you know why.
   is drawn by pywebview under `runtime\pythonw.exe`, so without
   `desktop.set_window_icon()` the taskbar would keep showing the Python logo
   next to an APSVN.exe that already looks right.
+* **An action waits for the background check instead of refusing.** Every
+  10 seconds `state()` asks the server what changed (`svn status -u`, over the
+  network) and holds the action lock while it does. The guard used to refuse
+  at once when the lock was taken — so *Get latest* pressed during that
+  check said *Please wait — the previous action is still running* and did
+  nothing, and the artist was left looking at the old state; the same for
+  locking or submitting. Now an action waits for a short holder, and still
+  refuses straight away when a real transfer is running (`busy`), re-checked
+  while waiting in case one starts. Reading a commit's files or a file's
+  history takes the lock without claiming to be a transfer, so it cannot make
+  *Get latest* refuse either. `tests/test_refresh.py` reproduces the check
+  holding the lock for a second, without relying on luck.
+* **After *Get latest*, everything that was worked out from the old copy is
+  thrown away.** Folders the Explorer remembers, open tree branches, the
+  task list, shot data, file versions, and the pictures of the *newest*
+  version (pictures of a specific revision never change and are kept). The
+  history reloads in place, keeping the selected commit and the scroll.
 * **The studio server is an addition, never a dependency.** Everything in
   `server_api.py` fails quietly into “no pictures, no tasks”: another server,
   an old image of ours, no network — APSVN works exactly as before. None of
@@ -985,7 +1007,7 @@ decision, not a gap.
 
 ### Tests
 
-Without a server — 657 checks against a temporary `file://` repository (and,
+Without a server — 667 checks against a temporary `file://` repository (and,
 for the studio server, a fake one on `127.0.0.1`); they leave nothing behind:
 
 ```bash
@@ -1022,6 +1044,10 @@ runtime\python.exe tests\test_apsvn.py
   Windows does not know), folders, junk input, the cache;
 * `test_incoming.py` — what “Get latest” will bring: your own commit does
   not make you “behind”, a colleague's additions, edits and deletions do.
+* `test_refresh.py` — *Get latest* pressed while the background check holds
+  the lock waits and succeeds, a second action during a real transfer is
+  still refused at once, reading history is not a transfer, and an update
+  marks everything derived from the old copy as stale;
 * `test_move.py` — moving: one row for the artist and both halves for svn,
   a U+02BC name, `@` in a name, moving back, into a folder svn does not know
   yet, a whole folder, a file somebody else holds, a file you hold, the
@@ -1038,7 +1064,9 @@ runtime\python.exe tests\test_apsvn.py
   **real `pre-commit` and `pre-lock` hooks** refusing and their text reaching
   the artist intact, and both sides of a real conflict as pictures.
 
-With a real server — 24 more checks, read-only; they take the connection from
+With a real server — up to 24 more checks, read-only (the ones about pictures,
+shots and scene dependencies run only when the project and the server have
+them); they take the connection from
 `%APPDATA%\APSVN` (and are skipped without it). **These are the ones that catch
 broken authentication:** a `file://` repository needs no password at all, so
 none of the other suites would ever notice.

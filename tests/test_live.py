@@ -113,21 +113,28 @@ else:
     ov = a.tasks_overview(force=True)
     check("задачі проєкту читаються", ov.get("ok") is True,
           ov.get("error") or "%d задач (разом із завершеними)" % len(ov.get("tasks") or []))
-    check("сервер уміє шоти й процеси (фаза 4)", s.get("shots") is True, s)
+    # Шоти й процеси — лише коли сервер їх оголошує. Він їх і прибирав: облік
+    # задач переїхав у Kitsu, і /processes та /shots зникли. Клієнт тоді
+    # просто не показує смуги шоту — перевіряємо, що не падає.
     cl, _pre = a._client()
-    try:
-        procs = cl.processes().get("processes") or []
-        check("процеси читаються — з кроками по черзі",
-              all(isinstance(p.get("steps"), list) for p in procs),
-              ["%s: %s" % (p.get("name"), " → ".join(x.get("name") for x in p["steps"]))
-               for p in procs])
-    except Exception as e:
-        check("процеси читаються — з кроками по черзі", False, e)
-    try:
-        shots = cl.shots().get("shots")
-        check("шоти проєкту читаються", isinstance(shots, list), "%d шотів" % len(shots))
-    except Exception as e:
-        check("шоти проєкту читаються", False, e)
+    if s.get("shots"):
+        try:
+            procs = cl.processes().get("processes") or []
+            check("процеси читаються — з кроками по черзі",
+                  all(isinstance(p.get("steps"), list) for p in procs),
+                  ["%s: %s" % (p.get("name"), " → ".join(x.get("name") for x in p["steps"]))
+                   for p in procs])
+        except Exception as e:
+            check("процеси читаються — з кроками по черзі", False, e)
+        try:
+            shots = cl.shots().get("shots")
+            check("шоти проєкту читаються", isinstance(shots, list), "%d шотів" % len(shots))
+        except Exception as e:
+            check("шоти проєкту читаються", False, e)
+    else:
+        first = (ov.get("tasks") or [{}])[0]
+        check("сервер без шотів: смуга шоту просто не показується, без винятку",
+              a.shot_pipeline(first.get("entity") or 1) is None)
     try:
         done = a.tasks_done()
         check("завершені задачі читаються", isinstance(done, list), len(done))

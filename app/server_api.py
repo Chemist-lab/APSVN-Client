@@ -25,6 +25,7 @@ import base64
 import collections
 import hashlib
 import json
+import re
 import threading
 import urllib.error
 import urllib.parse
@@ -445,6 +446,48 @@ def covering(tasks, local):
             out.append(t)
     out.sort(key=lambda t: -len((t.get("local") or "").strip("/")))
     return out
+
+
+# Посилання сервера на задачу в Kitsu: <база>/productions/<id>/<assets|shots>/tasks/<id>.
+# Адресу Kitsu APSVN більше ніде не бере: сервер її знає (публічну, з панелі),
+# а в /v1/ окремо не віддає. Тому все, що веде в Kitsu, складається з цих
+# посилань — і лише з тих, що мають саме таку форму.
+_KITSU_TASK = re.compile(
+    r"^(https?://[^/?#\s]+(?:/[^?#\s]*?)?)/productions/([A-Za-z0-9-]{1,64})/"
+    r"(assets|shots|edits|sequences|episodes)/tasks/([A-Za-z0-9-]{1,64})/?$")
+
+
+def kitsu_task(url):
+    """Сторінка задачі в Kitsu -> (база, постановка, вид, задача) або None."""
+    m = _KITSU_TASK.match(str(url or "").strip())
+    return m.groups() if m else None
+
+
+def kitsu_links(tasks):
+    """Адреси в Kitsu, складені з посилань на задачі; None — жодного немає.
+
+    mine — «My Tasks» людини в усіх постановках; board — сторінка постановки
+    цього проєкту: шоти, якщо вони в ній є, інакше ассети. Шляхи звірено з
+    маршрутизатором Kitsu студії (2026-09-25): «My Tasks» — /my-tasks (у
+    старших версіях Kitsu було /todos, тепер його там немає).
+    """
+    by_task, bases, prods, kinds = {}, [], [], set()
+    for t in tasks:
+        got = kitsu_task(t.get("url"))
+        if not got:
+            continue
+        base, prod, kind, _ = got
+        by_task[t.get("id")] = "%s/productions/%s/%s/tasks/%s" % got
+        bases.append(base)
+        prods.append(prod)
+        kinds.add(kind)
+    if not by_task:
+        return None
+    base = max(set(bases), key=bases.count)
+    prod = max(set(prods), key=prods.count)
+    page = "shots" if "shots" in kinds else "assets"
+    return {"base": base, "mine": base + "/my-tasks",
+            "board": "%s/productions/%s/%s" % (base, prod, page), "tasks": by_task}
 
 
 def waiting(t):

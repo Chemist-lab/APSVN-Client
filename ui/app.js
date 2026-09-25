@@ -3116,6 +3116,11 @@ function renderTaskList() {
   // Назва проєкту й так угорі, у випадайці: тут вона лише забирала місце
   // в рядку, де вже стоять фільтр і дві кнопки.
   $("tasks-title").textContent = "Tasks";
+  const kitsu = !!(tasksData && tasksData.kitsu);
+  $("tasks-web").title = kitsu ? "your tasks in all projects — “My Tasks” in Kitsu"
+                               : "every task of yours, in all projects, on the studio website";
+  $("tasks-board").title = kitsu ? "this project in Kitsu"
+                                 : "the whole project's board on the studio website";
   const err = tasksData && !tasksData.ok && tasksData.error;
   $("tasks-warn").textContent = err ? "Could not refresh the tasks: " + err : "";
   $("tasks-warn").classList.toggle("hidden", !err);
@@ -3362,9 +3367,14 @@ function renderTaskSide(d) {
   }
   if (d.local != null && (d.on_disk || d.is_dir))
     side.append(mini("📂 Open in the Explorer tab", "", () => goExplore(d.local, d.is_dir)));
-  side.append(mini("🌐 On the studio website", "", () =>
-    (d.local != null ? api().open_web("file", d.local)
-                     : api().open_web("repo", d.path)).catch(e => fail(e))));
+  // Задача живе в Kitsu — туди й веде; старий сервер — сторінка файлу на сайті.
+  if (d.kitsu)
+    side.append(mini("🌐 Open in Kitsu", "", () =>
+      api().open_web("task", d.id).catch(e => fail(e))));
+  else
+    side.append(mini("🌐 On the studio website", "", () =>
+      (d.local != null ? api().open_web("file", d.local)
+                       : api().open_web("repo", d.path)).catch(e => fail(e))));
   // Задача на теці (ассет, шот) — показати, що в ній відкривати: інакше
   // «відкрити файл задачі» означало б іти шукати його в провіднику.
   if (d.is_dir && d.local != null) taskFiles(side, d);

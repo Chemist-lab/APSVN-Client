@@ -189,6 +189,7 @@ TASKS.update({
     34: dict(_t(34, "/trunk/Assets/prop/sofa", "Rigging", "wip", ["taras"]), kitsu=True,
              linked=False),
 })
+KITSU_ON = False          # чи сервер каже «kitsu: true» у списку задач
 KITSU_MOVES = {32: [{"key": "wip", "name": "Work In Progress"},
                     {"key": "wfa", "name": "Waiting For Approval"}],
                33: [{"key": "done", "name": "Done"}, {"key": "retake", "name": "Retake"},
@@ -250,7 +251,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if q.get("status"):
                 want = q["status"].split(",")
                 out = [t for t in out if t["status"] in want]
-            return self._send(200, {"tasks": out, "statuses": []})
+            return self._send(200, {"tasks": out, "statuses": [], "kitsu": KITSU_ON})
         if p.startswith("/api/v1/tasks/"):
             parts = p.split("/")
             tid = int(parts[4])
@@ -696,6 +697,61 @@ try:
     check("будь-яка інша сторінка — відмова", False)
 except sc.SvnError:
     check("будь-яка інша сторінка — відмова", True)
+
+print("--- Api: задачі, мої задачі й дошка — у Kitsu ---")
+KB = "https://kitsu.studio.test"
+PROD = "90f82298-ba6a-4382-92cc-a356303547d7"
+TASKS[31]["url"] = KB + "/productions/" + PROD + "/assets/tasks/de86440b-600b-4a5b"
+TASKS[15]["url"] = KB + "/productions/" + PROD + "/shots/tasks/7afdc4af-8f3c"
+TASKS[32]["url"] = "javascript:alert(1)//productions/x/assets/tasks/y"
+KITSU_ON = True
+opened.clear()
+app.desktop.open_path = lambda u: opened.append(u) or True
+check("інтерфейсу — лише «чи є куди вести»",
+      api.tasks_overview(True).get("kitsu") is True and
+      "url" not in api.tasks_overview()["tasks"][0])
+api.open_web("task", 31)
+api.open_web("mine")
+api.open_web("board")
+check("задача — її сторінка в Kitsu", opened[0] == TASKS[31]["url"], opened[:1])
+check("мої задачі — «My Tasks» у Kitsu (/my-tasks)", opened[1] == KB + "/my-tasks",
+      opened[1:2])
+check("дошка — постановка проєкту, шоти (бо вони в ній є)",
+      opened[2] == KB + "/productions/" + PROD + "/shots", opened[2:3])
+check("у панелі задачі — кнопка в Kitsu", api.task_detail(31).get("kitsu") is True)
+check("посилання не тієї форми — не посилання", api.task_detail(32).get("kitsu") is False)
+for bad in (32, "31; calc", None):
+    try:
+        api.open_web("task", bad)
+        check("задача без сторінки в Kitsu — відмова (%r)" % (bad,), False, opened[-1])
+    except sc.SvnError:
+        check("задача без сторінки в Kitsu — відмова (%r)" % (bad,), True)
+# Kitsu є, а в цьому проєкті задач із ним ще немає — адресу беремо з інших
+saved = {i: TASKS[i].pop("url") for i in (31, 15, 32)}
+TASKS[90] = dict(_t(90, "/trunk/x", "Modeling", "wip", ["olena"]), repo="other",
+                 url=KB + "/productions/other-prod/assets/tasks/zz")
+api.tasks_overview(True)
+opened.clear()
+api.open_web("mine")
+api.open_web("board")
+check("без задач у проєкті: мої задачі — все одно в Kitsu", opened[:1] == [KB + "/my-tasks"],
+      opened)
+check("без задач у проєкті: замість постановки — відкриті постановки",
+      opened[1:] == [KB + "/open-productions"], opened)
+del TASKS[90]
+api.tasks_overview(True)
+try:
+    api.open_web("board")
+    check("Kitsu без жодної задачі — пояснення, а не сторінка сайту", False, opened[-1])
+except sc.SvnError as e:
+    check("Kitsu без жодної задачі — пояснення, а не сторінка сайту", "Kitsu" in str(e), e)
+KITSU_ON = False
+opened.clear()
+api.tasks_overview(True)
+api.open_web("mine")
+check("сервер без Kitsu — знову сторінки сайту студії", opened == [HOST + "/browse/mine"],
+      opened)
+app.desktop.open_path = real_open
 
 print("--- Api: без сервера все мовчки вимикається ---")
 api2 = app.Api()

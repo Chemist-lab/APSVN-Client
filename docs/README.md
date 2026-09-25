@@ -218,14 +218,16 @@ this appears, and nothing else changes.
   supervisor), **↩ Back to work**, comments, and the files — lock and open,
   show in folder, history, **📂 Open in the Explorer tab**; a task on a
   folder (an asset, a shot) lists the files inside it with an **Open**
-  button each. Which status buttons appear is decided by the server, by
-  Kitsu's rules — so there are no buttons that would only ever be refused.
+  button each, and **🌐 Open in Kitsu** opens the task there. Which status
+  buttons appear is decided by the server, by Kitsu's rules — so there are
+  no buttons that would only ever be refused. At the top, **🌐 All my
+  tasks** opens *My Tasks* in Kitsu and **Project board** the project's
+  page in Kitsu (its shots, or its assets if it has no shots).
 * **Tasks are yours; the project is everybody's.** The Tasks tab lists only
   your own tasks. The project itself — every folder and every file — is open
   to everybody who is in it, in the Explorer tab, whoever the task is
   assigned to: anything anybody changes is recorded in their name anyway.
-  The board of everybody's tasks is on the studio website (**Project
-  board**).
+  The board of everybody's tasks is in Kitsu (**Project board**).
 * **Tasks in the file lists.** A file of *your* task shows its status
   (`📋 Retake`); a file assigned to *someone else* shows their name
   (`📋 taras`), so you know they may be working on it — you can still open
@@ -264,8 +266,8 @@ this appears, and nothing else changes.
   the scenes that would open without it and asks.
 * **A conflict shows both sides as pictures** — yours and your colleague's —
   before you choose which one to keep.
-* **🌐 On the studio website** — the file's page, your tasks, the project
-  board.
+* **🌐 On the studio website** — the file's page: its previews, history
+  and links. Tasks open in Kitsu (above).
 
 #### “These files are assigned to someone else”
 
@@ -390,7 +392,7 @@ part of the root, with the code in `Resources/app`.
 | `explorer.py`   | the Explorer: one folder at a time |
 | `blendthumb.py` | preview embedded in a `.blend` |
 | `imgthumb.py`   | previews for png/jpg/tga/exr |
-| `tests/`        | 681 checks without a server, up to 24 more (read-only) against the real one |
+| `tests/`        | 694 checks without a server, up to 24 more (read-only) against the real one |
 
 Settings live in `%APPDATA%\APSVN\config.json`, format 2:
 `{"format":2, "projects":[…], "current":"<id>", …mirror of the current one…}`.
@@ -770,6 +772,18 @@ behind decisions that look odd until you know why.
   rebuilds when the hook's own text is lost uses the server's newer shape,
   `path — people (Type, Status; …)`, because one file can have two current
   steps.
+* **Kitsu's pages are built from the server's links to tasks.** The
+  studio website has no task pages any more, and the server does not name
+  Kitsu's address in `/v1/` — but every task it sends carries `url`,
+  `<kitsu>/productions/<id>/<assets|shots>/tasks/<id>`. APSVN takes Kitsu's
+  address and the project's production from those (`server_api.
+  kitsu_links`), accepts only links of exactly that shape over http(s), and
+  keeps them in the app: the interface still says only *what* to open (a
+  task by number, *mine*, *board*). The paths were checked against the
+  studio's Kitsu router: *My Tasks* is `/my-tasks` (older Kitsu had
+  `/todos`, which this one no longer has), the list of all productions is
+  for admins only, so a project without tasks yet opens `/open-productions`
+  instead. A server without Kitsu keeps the studio website's pages.
 * **What a person may do with a task, the server says — APSVN does not
   guess.** A colleague's task opens from the name on its file, and a
   supervisor may change any task, so guessing would mean buttons that refuse
@@ -1038,7 +1052,7 @@ decision, not a gap.
 
 ### Tests
 
-Without a server — 681 checks against a temporary `file://` repository (and,
+Without a server — 694 checks against a temporary `file://` repository (and,
 for the studio server, a fake one on `127.0.0.1`); they leave nothing behind:
 
 ```bash

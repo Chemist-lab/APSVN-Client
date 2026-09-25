@@ -284,6 +284,7 @@ class Api:
         self._last = {}                    # кеш стану ПО ПРОЄКТАХ
         self._srv = {}                     # що вміє сервер — по проєктах
         self._tasks = {}                   # задачі — по проєктах
+        self._kitsu = {}                   # адреси в Kitsu — по проєктах
         self._versions = {}                # версії файлу з ключами вмісту
         self._img = srv.ImageCache()       # прев'ю з сервера
         self._memo = {}                    # (проєкт, що) -> (коли, відповідь)
@@ -658,7 +659,10 @@ class Api:
         me = s.get("me") or p.get("username")
         tasks = [self._task_view(t, prefix, me, p.get("wc"))
                  for t in got.get("tasks") or []]
-        out = {"ok": True, "me": me, "tasks": tasks}
+        # Адреси в Kitsu лишаються ТУТ: інтерфейсу — лише «чи є куди вести».
+        links = srv.kitsu_links(got.get("tasks") or [])
+        self._kitsu[p["id"]] = {"on": bool(got.get("kitsu")), "links": links}
+        out = {"ok": True, "me": me, "tasks": tasks, "kitsu": bool(links)}
         self._tasks[p["id"]] = {"at": time.time(), "out": out}
         return out
 
@@ -752,6 +756,7 @@ class Api:
         t = got.get("task") or {}
         p = self._proj()
         view = self._task_view(t, prefix, s.get("me"), p.get("wc"))
+        view["kitsu"] = bool(srv.kitsu_task(t.get("url")))
         view["supervisor"] = bool(got.get("supervisor"))
         view["created_by"] = t.get("created_by")
         # Що ЦЯ людина може з цією задачею, сервер тепер каже сам (права
@@ -828,6 +833,12 @@ class Api:
         адресу складаємо самі з адреси проєкту. Так інтерфейс не може
         попросити відкрити будь-що, і нічого чужого в браузер не потрапить.
         """
+        if kind in ("task", "mine", "board"):
+            url = self._kitsu_page(kind, path)
+            if url:
+                if not desktop.open_path(url):
+                    raise sc.SvnError("Could not open the browser")
+                return True
         w = self._where()
         if not w:
             raise sc.SvnError("This project’s server has no website.")
@@ -850,6 +861,57 @@ class Api:
         if not desktop.open_path(url):
             raise sc.SvnError("Could not open the browser")
         return True
+
+    def _kitsu_page(self, kind, task_id=None):
+        """Сторінка в Kitsu: задача, «My Tasks» чи постановка проєкту.
+
+        Задачі тепер живуть у Kitsu, і сторінок задач на сайті студії більше
+        немає. Адресу складаємо з посилань сервера на задачі (server_api.
+        kitsu_links) — інтерфейс, як і раніше, каже лише «що». None — сервер
+        без Kitsu (старий): тоді сторінки сайту студії, як було.
+        """
+        pid = self.c.get("id")
+        if pid not in self._kitsu:
+            self.tasks_overview()
+        k = self._kitsu.get(pid) or {}
+        links = k.get("links")
+        if kind == "task":
+            try:
+                tid = int(task_id)
+            except (TypeError, ValueError):
+                raise sc.SvnError("Unknown page")
+            url = (links or {}).get("tasks", {}).get(tid)
+            if url is None:
+                client, _ = self._client()
+                if client is None:
+                    raise sc.SvnError(srv.OFFLINE)
+                try:
+                    got = client.task(tid).get("task") or {}
+                except srv.ApiError as e:
+                    raise sc.SvnError(str(e))
+                parts = srv.kitsu_task(got.get("url"))
+                if not parts:
+                    raise sc.SvnError("This task has no page in Kitsu.")
+                url = "%s/productions/%s/%s/tasks/%s" % parts
+            return url
+        if links:
+            return links[kind]
+        if not k.get("on"):
+            return None
+        # Kitsu є, а задач у проєкті ще немає: адресу Kitsu знаємо з задач
+        # інших проєктів — тоді «мої задачі» там, а замість постановки —
+        # відкриті постановки (/productions у Kitsu — лише для адмінів).
+        client, _ = self._client()
+        other = None
+        if client is not None:
+            try:
+                other = srv.kitsu_links(client.tasks(all_repos=True).get("tasks") or [])
+            except srv.ApiError:
+                other = None
+        if not other:
+            raise sc.SvnError("There are no tasks in Kitsu yet, so APSVN does not "
+                              "know where Kitsu is.")
+        return other["mine"] if kind == "mine" else other["base"] + "/open-productions"
 
     # --- картинки з сервера ---
     def _preview(self, client, rpath, rev):

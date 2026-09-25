@@ -168,6 +168,59 @@ was *just before* it — in that commit itself it no longer exists. The dialog
 says so before you agree. Files you have unsubmitted changes in are left alone
 and listed by name afterwards, rather than quietly overwritten.
 
+### What the studio server adds
+
+If the project lives on the studio's own server (svn-native — an address like
+`https://svn.example.com/svn/<project>`), APSVN also talks to its `/api/v1`
+with the same user name and password. On any other Subversion server none of
+this appears, and nothing else changes.
+
+* **My tasks** — a tab listing what is assigned to you in this project,
+  grouped by what to do about it: *Sent back* (your supervisor asked for
+  changes — their note is right there in the task), *In progress*, *To do*,
+  *Waiting for review*. The statuses and their colours are Kitsu's. From a
+  task: **▶ Start working**, **✔ Send to review** (with an optional note for
+  your supervisor), **↩ Back to work**, comments, and the file itself — lock
+  and open, show in folder, history. Accepting work or sending it back is the
+  supervisor's, on the website, so there are no buttons here that would only
+  ever be refused.
+* **Tasks in the file lists.** A file of *your* task shows its status
+  (`📋 Retake`); a file assigned to *someone else* shows their name
+  (`📋 taras`) — before you try to lock it, not after. Click either to open
+  the task.
+* **Send to review with the submit.** When the files you tick belong to a
+  task of yours, a checkbox appears next to *keep my locks*:
+  *send “sh010.blend” to review*. Your submit note goes to the supervisor with
+  it. There is no “start working” step on submit — the server moves the task
+  into work by itself on your first commit.
+* **Pictures.** The Explorer shows the server's picture for a file that is not
+  downloaded yet; *Project history* shows the files of a commit with their
+  pictures; a file's history shows a picture of **every version**, and marks
+  the one you have — *you have this version*. If your file is changed but its
+  contents match an older version (you brought one back and have not
+  submitted it), that is recognised too, by the checksum the server keeps.
+* **What a scene uses, and who uses a file.** Pick a `.blend` in the
+  Explorer: how many project files it pulls in, what is packed, what comes
+  live from shared storage (`X:\…` — by studio convention that is how it
+  should be, not a mistake), what is broken (missing, wrong letter case, a
+  full path that only works on the author's machine) — and a warning when
+  files it uses are newer on the server. Pick a texture or a library: which
+  scenes use it.
+* **Deleting something scenes still use** — before the submit, APSVN lists
+  the scenes that would open without it and asks.
+* **A conflict shows both sides as pictures** — yours and your colleague's —
+  before you choose which one to keep.
+* **🌐 On the studio website** — the file's page, your tasks, the project
+  board.
+
+#### “These files are assigned to someone else”
+
+If the project uses **soft locks**, a file that belongs to a task only its
+assignee (or a supervisor) may lock and submit. Everybody else gets the
+server's refusal — in a window, word for word as the server wrote it: whose
+file it is and who to ask. That is a studio rule, not a broken network, and
+APSVN says so rather than “something went wrong”.
+
 ### Several projects
 
 The dropdown at the top left switches projects, **＋** adds one. The password
@@ -271,6 +324,7 @@ part of the root, with the code in `Resources/app`.
 |-----------------|------------|
 | `app/app.py`    | application logic, the bridge between the interface and svn |
 | `app/svn_client.py` | wrapper around `svn.exe` |
+| `app/server_api.py` | the studio server's `/api/v1`: tasks, pictures, what a scene uses |
 | `ui/`           | the interface (HTML/CSS/JS) |
 | `runtime/`      | Python 3.14 embeddable — so nothing has to be installed |
 | `runtime-mac/`  | the same idea on macOS: a portable python.org framework, built by `make_runtime_mac.sh` |
@@ -280,7 +334,7 @@ part of the root, with the code in `Resources/app`.
 | `explorer.py`   | the Explorer: one folder at a time |
 | `blendthumb.py` | preview embedded in a `.blend` |
 | `imgthumb.py`   | previews for png/jpg/tga/exr |
-| `tests/`        | 329 checks, 33 of them against a real server |
+| `tests/`        | 586 checks without a server, 21 more (read-only) against the real one |
 
 Settings live in `%APPDATA%\APSVN\config.json`, format 2:
 `{"format":2, "projects":[…], "current":"<id>", …mirror of the current one…}`.
@@ -614,6 +668,61 @@ behind decisions that look odd until you know why.
   is drawn by pywebview under `runtime\pythonw.exe`, so without
   `desktop.set_window_icon()` the taskbar would keep showing the Python logo
   next to an APSVN.exe that already looks right.
+* **The studio server is an addition, never a dependency.** Everything in
+  `server_api.py` fails quietly into “no pictures, no tasks”: another server,
+  an old image of ours, no network — APSVN works exactly as before. None of
+  its calls takes the lock the long svn actions hold (a picture must not wait
+  for a commit to finish), and none runs `svn` while a transfer is going: svn
+  beside svn on the same working copy hits its lock, and `_run` would then try
+  to *repair* the copy in the middle of somebody else's operation. What the
+  server calls need from the copy comes from the last `state()`.
+* **The API is looked for only where svn-native promises it.**
+  `https://host/svn/<repo>` → `https://host/api/v1/`. Anything else is not
+  asked at all: sending a password to an address nobody promised is not
+  worth it, even on the same host.
+* **Redirects are not followed, and absolute links from a response are not
+  fetched.** `urllib` repeats a request to the new address *with the same
+  `Authorization` header* — to any host. A server answering 302 to somewhere
+  else would have been handed the artist's password. Picture links arrive
+  relative and signed (`/api/v1/blobs/…?s=…`) and are fetched only from the
+  origin the response came from. `tests/test_server.py` runs a second server
+  as a trap and checks nobody came to it.
+* **The password rides in every request (Basic), not after a 401.** Half the
+  requests; the server remembers a good check for five minutes anyway. A
+  refusal is remembered on our side for five minutes too — a wrong password
+  repeated every ten seconds looks like guessing, and the server would close
+  the door (429) for everything.
+* **A scene's dependencies are summarised in Python.** One 1.2 GB scene on the
+  real server answers with 181 KB of JSON — mostly packed images one by one.
+  The interface gets counts, the broken links and what is newer on the server:
+  216 bytes.
+* **The last known task list survives a failed refresh.** A “this file is
+  taras's” mark that is a minute old is better than the mark vanishing because
+  the server hiccuped right after you changed a status. So a change marks the
+  list stale instead of forgetting it.
+* **A hook's refusal is shown word for word, in a window.** The soft-lock hook
+  writes for people — whose file, who to ask — so `humanize()` checks for a
+  hook refusal *first*: any rule below it that happened to match a word in the
+  text (“locked”, “newer”) would replace the studio's explanation with advice
+  about something else. It is also checked *before* the automatic
+  cleanup-and-retry, because a hook message may well contain the word
+  “cleanup”, and retrying a commit the server deliberately refused is wrong.
+  Two things had to be undone on the way to the artist: svn writes a character
+  it cannot print as `?\226?\128?\148` (the hook's “—”), and on Windows a hook's
+  CRLF comes back as `\r\r\n`, which put a blank line between every two lines
+  of the explanation — found by real `pre-commit` and `pre-lock` hooks in
+  `tests/test_server.py`, not by the synthetic strings. It arrives as
+  `RuleError`; pywebview passes the class name to the interface, which shows
+  a window instead of a nine-second toast. When the text is lost on the way (a
+  bare 403), the explanation is rebuilt from the tasks APSVN already knows —
+  but only for a refusal that looks like a rule, so a colleague's ordinary lock
+  is never mislabelled as a task.
+* **What to relaunch after an update is read from the NEW build.** It used to
+  be a hard-coded `APSVN.bat`; after the code moved into `app/` there is no
+  such file, so the swap went through and the relaunch did not — the program
+  vanished and Windows complained it could not find `APSVN.bat`.
+  `updater.relaunch_target()` looks into the staged build, the same principle
+  as recognising its layout.
 * **Progress is only shown where it was actually measured.** Downloading one
   version is exact — the size is known in advance and the temporary file can be
   watched. Uploading is not: svn prints nothing while sending, and its read
@@ -636,6 +745,14 @@ create a release on GitHub tagged `v<VERSION>` and attach the zip. The client
 reads `/releases/latest`, needs no authentication while the repository is
 public, and picks the asset for the system it is running on (`-mac.zip` or
 not).
+
+**1.0.0 cannot update itself to 1.1.0 or later.** It checks a downloaded build
+against its own idea of what a build looks like — `app.py` and
+`svn_client.py` in the root — and since 1.1.0 the code lives in `app/`, so
+1.0.0 answers “this does not look like APSVN” and keeps running as it was.
+Nothing breaks; those installs have to be replaced by hand once (settings and
+passwords live outside the folder and survive). From 1.1.0 on the check
+accepts either layout, so the next move of the code will not cut anybody off.
 
 ### macOS
 
@@ -742,8 +859,8 @@ decision, not a gap.
 
 ### Tests
 
-Without a server — 482 checks against a temporary `file://` repository; they
-leave nothing behind:
+Without a server — 586 checks against a temporary `file://` repository (and,
+for the studio server, a fake one on `127.0.0.1`); they leave nothing behind:
 
 ```bash
 runtime\python.exe tests\test_apsvn.py
@@ -779,8 +896,17 @@ runtime\python.exe tests\test_apsvn.py
   Windows does not know), folders, junk input, the cache;
 * `test_incoming.py` — what “Get latest” will bring: your own commit does
   not make you “behind”, a colleague's additions, edits and deletions do.
+* `test_server.py` — the studio server, against a fake one answering in the
+  same shapes as the real `api_app.py`: where the API is looked for, paths in
+  a copy taken from `/trunk`, which tasks cover a file (and that `sh01` does
+  not cover `sh010.blend`), 401/403/404/429 in plain words, a redirect and an
+  absolute link that must not take the password anywhere (a trap server
+  counts visitors), pictures and their cache, the SHA-1 of a local file found
+  among the versions, dependencies summarised, the delete warning,
+  **real `pre-commit` and `pre-lock` hooks** refusing and their text reaching
+  the artist intact, and both sides of a real conflict as pictures.
 
-With a real server — 33 more checks; they take the connection from
+With a real server — 21 more checks, read-only; they take the connection from
 `%APPDATA%\APSVN` (and are skipped without it). **These are the ones that catch
 broken authentication:** a `file://` repository needs no password at all, so
 none of the other suites would ever notice.

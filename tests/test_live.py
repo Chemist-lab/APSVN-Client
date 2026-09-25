@@ -97,6 +97,71 @@ finally:
     sc._config_dir = saved
     shutil.rmtree(sandbox, ignore_errors=True)
 
+# --- сервер студії: прев'ю, залежності, задачі — ТІЛЬКИ ЧИТАННЯ --------------
+# Статуси й коментарі тут не чіпаються: це дані людей, і перевірка не має
+# права лишати в стрічці чужої задачі слід. Запис перевіряє test_server.py
+# на підробному сервері.
+import json
+
+print()
+if not a._where():
+    print("ПРОПУЩЕНО (сервер студії): адреса проєкту не svn-native —", url)
+else:
+    s = a.server_status(force=True)
+    check("сервер студії пускає тим самим логіном", s.get("ok") is True, s)
+    check("сервер уміє задачі (образ перезібрано)", s.get("tasks") is True, s)
+    ov = a.tasks_overview(force=True)
+    check("задачі проєкту читаються", ov.get("ok") is True,
+          ov.get("error") or "%d незавершених" % len(ov.get("tasks") or []))
+    try:
+        done = a.tasks_done()
+        check("завершені задачі читаються", isinstance(done, list), len(done))
+    except sc.SvnError as e:
+        check("завершені задачі читаються", False, e)
+
+    # перший .blend у копії, не глибше двох тек
+    blend = None
+    for root_dir, dirs, names in os.walk(wc):
+        dirs[:] = [d for d in dirs if d != ".svn"]
+        if root_dir.count(os.sep) - wc.count(os.sep) >= 2:
+            dirs[:] = []
+        hit = [n for n in names if n.lower().endswith(".blend")]
+        if hit:
+            blend = os.path.relpath(os.path.join(root_dir, hit[0]),
+                                    wc).replace("\\", "/")
+            break
+    if not blend:
+        print("  (у копії немає .blend — прев'ю й залежності не перевірено)")
+    else:
+        print("  .blend для перевірки:", blend)
+        uri = a.previews([{"path": blend, "rev": None}]).get(blend + "@") or ""
+        check("прев'ю .blend з сервера — картинка", uri.startswith("data:image/"),
+              uri[:30])
+        t0 = time.time()
+        a.previews([{"path": blend, "rev": None}])
+        check("друге прев'ю — з пам'яті", time.time() - t0 < 0.05,
+              "%.3f с" % (time.time() - t0))
+        v = a.file_versions(blend)
+        check("версії файлу з картинками", bool(v.get("ok") and v.get("versions")),
+              v.get("error") or "%d версій" % len(v.get("versions") or {}))
+        revs = [r["rev"] for r in sc.file_log(wc, blend, username=u, password=p)[:5]]
+        check("ревізії версій — ті самі, що в історії svn",
+              set(revs) <= set(v.get("versions") or {}),
+              (revs, sorted(v.get("versions") or {})))
+        mine_row = {f["path"]: f for f in sc.status(wc, me=u)}.get(blend, {})
+        if mine_row.get("status") in (None, "normal"):
+            t0 = time.time()
+            wv = a.which_version(blend)
+            check("незмінений файл упізнано серед версій за SHA-1",
+                  bool(wv and wv.get("rev")), "%s, %.1f с" % (wv, time.time() - t0))
+        fl = a.file_links(blend)
+        dp = fl.get("deps") or {}
+        check("залежності сцени читаються", dp.get("state") in ("ok", "pending"),
+              dp.get("note") or dp.get("state"))
+        size = len(json.dumps(fl))
+        check("залежності зведено, а не передано поіменно", size < 20000,
+              "%d байт через міст до інтерфейсу" % size)
+
 print()
 print("=" * 62)
 print("ПРОЙДЕНО: %d   ПРОВАЛЕНО: %d" % (len(OK), len(FAIL)))

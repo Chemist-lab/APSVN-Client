@@ -142,6 +142,21 @@ class SvnError(Exception):
         self.raw = raw or human
 
 
+class RuleError(SvnError):
+    """Сервер відмовив за ПРАВИЛОМ студії — хуком, а не збоєм.
+
+    Найчастіше це м'який лок: «These files are assigned to someone else: …».
+    Текст хука написано для людей, тож показуємо його як є, а не переказуємо:
+    він каже, чий файл і до кого йти, — і це не мережа, не пароль і не наша
+    помилка. Сказати тут «щось пішло не так» означало б послати людину
+    лагодити те, що не зламане.
+
+    Окремий клас — не для краси. pywebview передає в інтерфейс ім'я класу
+    помилки, і інтерфейс показує таку відмову вікном, а не тостом на дев'ять
+    секунд: пояснення на кілька рядків треба встигнути прочитати.
+    """
+
+
 # --- кодування -------------------------------------------------------------
 def _acp():
     """Кодова сторінка, у якій svn.exe читає argv.
@@ -247,7 +262,64 @@ _HUMAN = [
 ]
 
 
+# «?\226?\128?\148» — так svn пише символ, якого немає в кодуванні виводу:
+# кожен байт UTF-8 окремо, десятковим числом. Хук на сервері пише UTF-8 (там
+# тире й трикрапка), а консоль Windows їх не знає — і художник отримав би
+# «olena ?\226?\128?\148 Animation» замість «olena — Animation».
+_FUZZY = re.compile(r"(?:\?\\\d{3})+")
+
+
+def _unfuzz(s):
+    def one(m):
+        nums = re.findall(r"\\(\d{3})", m.group(0))
+        try:
+            return bytes(int(n) for n in nums).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return m.group(0)
+    return _FUZZY.sub(one, s or "")
+
+
+_HOOK_RE = re.compile(
+    r"(?:Commit|Lock|Unlock|Revprop change) blocked by [\w-]+ hook"
+    r" \(exit code -?\d+\)(?: with output)?:?[ \t]*(.*)", re.S | re.I)
+# Кінець виводу хука — наступне повідомлення самого svn. Для лока це,
+# наприклад, «svn: E200009: One or more locks could not be obtained».
+_SVN_LINE = re.compile(r"^svn: (?:warning: )?[EW]\d{6}:")
+
+HOOK_SILENT = ("The server refused this by a rule set up for the project, "
+               "without saying why. Ask whoever runs the server.")
+
+
+def hook_refusal(raw):
+    """Що сказав серверний хук, коли відмовив, — або None, якщо це не хук.
+
+    Порожній рядок не повертаємо ніколи: хук, що відмовив мовчки, — теж
+    відмова за правилом, і людині треба сказати хоч це.
+    """
+    m = _HOOK_RE.search(raw or "")
+    if not m:
+        return None
+    # Хук на Windows пише CRLF, а svn, виводячи, ще раз перекладає \n у \r\n —
+    # виходить \r\r\n, і між кожними двома рядками пояснення стояв би
+    # порожній. Спершу зводимо всі закінчення рядків до одного.
+    body = (m.group(1).replace("\r\r\n", "\n").replace("\r\n", "\n")
+            .replace("\r", "\n"))
+    lines = []
+    for line in body.split("\n"):
+        if _SVN_LINE.match(line):
+            break
+        lines.append(line.rstrip())
+    text = _unfuzz("\n".join(lines)).strip("\n")
+    return text if text.strip() else HOOK_SILENT
+
+
 def humanize(raw):
+    # Хук — першим. Його текст писала людина для людей, і будь-яке правило
+    # нижче, що випадково збіглося б зі словом у ньому («locked», «newer»),
+    # підмінило б пояснення студії чужою порадою.
+    said = hook_refusal(raw)
+    if said is not None:
+        return said
     for pat, msg in _HUMAN:
         if re.search(pat, raw, re.I):
             return msg
@@ -636,6 +708,12 @@ def _run(args, cwd=None, username=None, password=None, timeout=120,
 
         if rc != 0:
             raw = _dec(err).strip() or _dec(out).strip()
+            # Відмова хука — ПЕРЕД спробою лагодити копію нижче: у тексті
+            # хука цілком може бути слово «cleanup», і тоді ми запустили б
+            # cleanup і повторили коміт, якому сервер щойно свідомо відмовив.
+            said = hook_refusal(raw)
+            if said is not None:
+                raise RuleError(said, raw)
             # E155037/E155009 — «попередня операція не завершилась»: без них
             # одна невдала спроба відновлення файлу виводила з ладу ВЕСЬ
             # проєкт, доки людина сама не натисне «Полагодити»
@@ -1103,18 +1181,24 @@ def lock_folder(wc, rel, me=None, username=None, password=None, progress=None):
         raise SvnError("There is nothing to lock in this folder.")
     others = {i["path"]: i["other"] for i in items if i["other"]}
     todo = [i["path"] for i in items if not i["mine"] and i["path"] not in others]
+    refused = None
     if todo:
         try:
             _run(["lock"], cwd=wc, targets=todo, message="APSVN",
                  username=username, password=password, timeout=None,
                  notifier=_notifier(progress, "lock", len(todo), wc)
                  if progress else None)
+        except RuleError as e:
+            # Часткова невдача, як і нижче, — але з поясненням від сервера.
+            # Проковтнути його означало б сказати «взято 5 із 8» і змовчати,
+            # ЧОМУ решту не дали: файли призначені іншій людині.
+            refused = str(e)
         except SvnError:
             pass                    # часткова невдача — порахуємо нижче
     after = files_under(wc, rel)
     return {"total": len(items),
             "mine": sum(1 for i in after if i["mine"]),
-            "others": others}
+            "others": others, "refused": refused}
 
 
 def unlock_folder(wc, rel, username=None, password=None, progress=None):

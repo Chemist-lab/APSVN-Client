@@ -37,6 +37,9 @@
       <button data-tab="files" class="tab on">Changes</button>
       <button data-tab="browse" class="tab">Explorer</button>
       <button data-tab="history" class="tab">Project history</button>
+      <!-- Видно лише тоді, коли сервер проєкту вміє задачі (svn-native).
+           На будь-якому іншому сервері вкладки просто немає. -->
+      <button data-tab="tasks" id="tab-tasks-btn" class="tab hidden">My tasks<span id="tasks-n" class="tab-n hidden"></span></button>
     </nav>
     <div class="foot">
       <!-- Видимими лишаються дві дії, до яких художник ходить сам: тека з
@@ -98,6 +101,9 @@
         <input id="c-msg" placeholder="What did you do? (for example: jump animation sh010)">
         <label class="keep" title="by default a file is released when you submit, and becomes read-only again">
           <input type="checkbox" id="c-keep"> keep my locks</label>
+        <!-- З'являється, лише коли серед вибраного є файл твоєї задачі. -->
+        <label class="keep review hidden" id="c-review-l" title="after the submit, the task goes to your supervisor for review">
+          <input type="checkbox" id="c-review"> <span id="c-review-t">send to review</span></label>
         <button id="b-commit" class="primary">⬆ Submit</button>
       </footer>
     </section>
@@ -136,6 +142,26 @@
       </div>
     </section>
 
+    <!-- Задачі з сервера студії. Ліворуч мої, згруповані за тим, що з ними
+         робити; праворуч — одна задача зі стрічкою подій і коментарями. -->
+    <section id="tab-tasks" class="hidden">
+      <div class="br-split">
+        <div class="tasks-left">
+          <div class="crumbs">
+            <span id="tasks-title" class="tasks-title">My tasks</span>
+            <span class="spacer"></span>
+            <button id="tasks-web" class="mini" title="every task of yours, in all projects, on the studio website">🌐 All my tasks</button>
+            <button id="tasks-board" class="mini" title="the whole project's board on the studio website">Project board</button>
+          </div>
+          <div id="tasks-warn" class="warn hidden"></div>
+          <div id="tasks-list"></div>
+        </div>
+        <aside id="task-side" class="task-side">
+          <div class="br-empty">Pick a task to see it here</div>
+        </aside>
+      </div>
+    </section>
+
     <!-- історія ОДНОГО файлу: накриває область, тож «Discard my changes»
          і «Bring back this version» ніколи не видно одночасно -->
     <section id="filehist" class="hidden">
@@ -157,6 +183,8 @@
     <div class="mbox" id="m-box">
       <div class="mtitle" id="m-title"></div>
       <div class="mtext" id="m-text"></div>
+      <div class="mimgs hidden" id="m-imgs"></div>
+      <textarea id="m-input" class="minput hidden" rows="3"></textarea>
       <label class="mchk hidden" id="m-chk-wrap">
         <input type="checkbox" id="m-chk"><span id="m-chk-t"></span></label>
       <div class="mbtns">

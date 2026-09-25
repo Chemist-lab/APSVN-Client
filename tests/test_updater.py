@@ -245,6 +245,33 @@ else:
 check("«релізів ще немає» — це стан none, а не поламка",
       r["state"] != "error", r)
 
+print()
+print("=" * 66)
+print("7. Що запустити після підміни — вирішує НОВА збірка")
+print("=" * 66)
+# Тут було зашито APSVN.bat. Після переїзду коду в app/ його в збірці немає,
+# і підміна проходила, а перезапуск — ні: програма зникала, лишалося віконце
+# Windows «не можу знайти APSVN.bat».
+new_build = os.path.join(ROOT, "rl_new")
+old_build = os.path.join(ROOT, "rl_old")
+empty = os.path.join(ROOT, "rl_empty")
+for d in (new_build, old_build, empty):
+    os.makedirs(d, exist_ok=True)
+open(os.path.join(new_build, "APSVN.exe"), "wb").close()
+open(os.path.join(old_build, "APSVN.bat"), "wb").close()
+inst = os.path.join(ROOT, "Program", "APSVN")
+if desktop.WINDOWS:
+    check("нова збірка (exe без bat) -> APSVN.exe",
+          up.relaunch_target(new_build, inst) == os.path.join(inst, "APSVN.exe"),
+          up.relaunch_target(new_build, inst))
+    check("стара збірка (лише bat) -> APSVN.bat",
+          up.relaunch_target(old_build, inst) == os.path.join(inst, "APSVN.bat"))
+    check("нічого не знайшлося -> exe (це те, що лежить у поточних збірках)",
+          up.relaunch_target(empty, inst) == os.path.join(inst, "APSVN.exe"))
+else:
+    check("на маку перезапускається сам .app",
+          up.relaunch_target(new_build, inst) == inst)
+
 shutil.rmtree(ROOT, ignore_errors=True)
 print()
 print("=" * 66)

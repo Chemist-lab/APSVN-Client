@@ -103,10 +103,39 @@ function ask(o) {
     for (const line of (o.lines || [])) {
       const d = document.createElement("div");
       d.className = "p" + (line.warn ? " warn-line" : "") +
-                    (line.bad ? " bad-line" : "");
+                    (line.bad ? " bad-line" : "") + (line.mono ? " mono" : "");
       d.textContent = line.text != null ? line.text : line;
       t.append(d);
     }
+
+    // Картинки поруч — щоб вибирати, БАЧАЧИ: «твоя» і «колеги» в конфлікті.
+    // Порожнє місце лишається підписаним, а не зникає: «картинки немає» —
+    // теж відповідь, і без неї друга половина здавалася б зламаною.
+    const imgs = $("m-imgs");
+    imgs.innerHTML = "";
+    const pics = (o.images || []).filter(Boolean);
+    imgs.classList.toggle("hidden", !pics.some(([, src]) => src));
+    for (const [label, src] of pics) {
+      const f = document.createElement("figure");
+      if (src) {
+        const im = document.createElement("img");
+        im.src = src; im.alt = "";
+        f.append(im);
+      } else {
+        const ph = document.createElement("div");
+        ph.className = "ph"; ph.textContent = "no picture";
+        f.append(ph);
+      }
+      const c = document.createElement("figcaption");
+      c.textContent = label;
+      f.append(c);
+      imgs.append(f);
+    }
+
+    const inp = $("m-input");
+    inp.value = (o.input && o.input.value) || "";
+    inp.placeholder = (o.input && o.input.placeholder) || "";
+    inp.classList.toggle("hidden", !o.input);
     if (o.facts && o.facts.length) {
       const f = document.createElement("div");
       f.className = "facts";
@@ -117,7 +146,9 @@ function ask(o) {
         const b = document.createElement("b"); b.textContent = v;
         r.append(a, b); f.append(r);
       }
-      t.append(f);
+      // факти першими — коли вони і є суть («що саме ти видаляєш»), а
+      // рядки нижче лише пояснюють наслідки
+      if (o.factsFirst) t.prepend(f); else t.append(f);
     }
 
     const chkWrap = $("m-chk-wrap"), chk = $("m-chk");
@@ -129,17 +160,23 @@ function ask(o) {
     ok.textContent = o.ok || "OK";
     ok.className = "primary" + (o.danger ? " bad" : "");
     cancel.textContent = o.cancel || "Cancel";
+    // Вікно-пояснення (відмова сервера) питати нема про що — лише «ясно».
+    cancel.classList.toggle("hidden", !!o.noCancel);
     alt.textContent = o.alt || "";
     alt.classList.toggle("hidden", !o.alt);
 
     const done = res => {
       $("modal").classList.add("hidden");
       document.removeEventListener("keydown", onKey, true);
-      resolve(Object.assign({ ok: false, alt: false, remember: chk.checked }, res));
+      resolve(Object.assign({ ok: false, alt: false, remember: chk.checked,
+                              text: inp.value.trim() }, res));
     };
     const onKey = e => {
       if (e.key === "Escape") { e.preventDefault(); done({}); }
-      if (e.key === "Enter") { e.preventDefault(); done({ ok: true }); }
+      // У полі коментаря Enter — новий рядок; відправити — Ctrl+Enter
+      if (e.key === "Enter" && (e.target !== inp || e.ctrlKey)) {
+        e.preventDefault(); done({ ok: true });
+      }
     };
     ok.onclick = () => done({ ok: true });
     alt.onclick = () => done({ alt: true });
@@ -148,8 +185,28 @@ function ask(o) {
     document.addEventListener("keydown", onKey, true);
 
     $("modal").classList.remove("hidden");
-    ok.focus();
+    (o.input ? inp : ok).focus();
   });
+}
+
+/* Відмова сервера за правилом студії (RuleError) — вікном, а не тостом.
+   Це не збій: сервер пояснює, чий файл і до кого йти, і пояснення на кілька
+   рядків за дев'ять секунд тосту не прочитати. Перший рядок тексту — це
+   заголовок («These files are assigned to someone else»), рядки з відступом
+   — шляхи й люди, решта — порада. */
+function fail(e, ms) {
+  if (e && e.name === "RuleError") {
+    const lines = clean(e).split("\n");
+    const title = (lines.shift() || "The server did not allow this")
+      .replace(/:\s*$/, "");
+    return ask({
+      title: title,
+      lines: lines.filter(l => l.trim()).map(
+        l => /^\s/.test(l) ? { text: l.trim(), mono: true } : l),
+      ok: "OK", noCancel: true,
+    });
+  }
+  toast(clean(e), ms || 9000);
 }
 
 function pref(name) {
@@ -277,6 +334,18 @@ async function _refresh(mine) {
   }
   if (mine !== gen) return;                   // проєкт уже перемкнули
   st = s;
+  // Інший проєкт — інший сервер, інші задачі, інші картинки: шляхи в двох
+  // проєктах можуть збігатися, а файли за ними — ні. Одне правило тут
+  // замість скидання в кожному місці, де проєкт може змінитися (вибір,
+  // додавання, «прибрати зі списку»).
+  if (s.pid !== srvPid) {
+    srvPid = s.pid;
+    srvInfo = null; tasksData = null; tasksSigLast = null;
+    taskSel = null; taskDone = null;
+    THUMBS.clear();
+    renderTaskBadge();
+    if (s.configured) initServer();
+  }
 
   if (!s.configured) {                        // майстер — лише коли проєктів 0
     showSetup(false);
@@ -369,7 +438,8 @@ function renderProjects() {
 }
 
 function showBroken(s) {
-  for (const id of ["tab-files", "tab-history", "tab-browse", "filehist"])
+  for (const id of ["tab-files", "tab-history", "tab-browse", "tab-tasks",
+                    "filehist"])
     $(id).classList.add("hidden");
   $("tab-broken").classList.remove("hidden");
   $("brk-title").textContent = s.broken;
@@ -379,7 +449,7 @@ function showBroken(s) {
 // внутрішні режими -> кнопки вкладок. Історія ОДНОГО файлу лишає підсвіченими
 // «Файли», бо вона відкривається саме звідти.
 const TAB_OF = { files: "files", file: "files", log: "history",
-                 browse: "browse" };
+                 browse: "browse", tasks: "tasks" };
 
 function showView(v) {
   view = v;
@@ -388,6 +458,7 @@ function showView(v) {
   $("tab-files").classList.toggle("hidden", v !== "files");
   $("tab-history").classList.toggle("hidden", v !== "log");
   $("tab-browse").classList.toggle("hidden", v !== "browse");
+  $("tab-tasks").classList.toggle("hidden", v !== "tasks");
   document.querySelectorAll(".tab").forEach(
     b => b.classList.toggle("on", b.dataset.tab === TAB_OF[v]));
 }
@@ -545,7 +616,8 @@ function renderFiles() {
     // перевикористаний вузол показував би вчорашній стан
     items.push(["f:" + f.path,
                 JSON.stringify([f, selected.has(f.path), openDirs.has(f.path),
-                                ICONS.get(extOf(f.path, f.dir)) ? 1 : 0]),
+                                ICONS.get(extOf(f.path, f.dir)) ? 1 : 0,
+                                taskSig(f.path)]),
                 () => fileRow(f)]);
     if (f.dir && openDirs.has(f.path)) childItems(items, f);
   };
@@ -599,6 +671,8 @@ function fileRow(f) {
 
     if (f.status_text) row.append(chip(f.status_text, f.status));
     if (f.remote_change) row.append(chip("newer on the server", "remote"));
+    const tc = taskChip(f.path);
+    if (tc) row.append(tc);
     if (f.dir) {
       row.append(chip(f.n_files + (f.counted_all === false ? "+" : "") +
                       (f.n_files === 1 ? " file" : " files") +
@@ -620,9 +694,11 @@ function fileRow(f) {
         prop: ["The file’s contents are fine — only its settings clash."],
       }[k];
 
-      row.append(mini(moved ? "keep my file" : "keep my version", "", () => {
+      row.append(mini(moved ? "keep my file" : "keep my version", "", async () => {
+        const pics = await conflictPics(f, k);
         ask({
           title: moved ? "Keep your file?" : "Keep your version?",
+          images: pics,
           lines: why.concat([
             moved ? "“" + f.path + "” stays as yours and goes back " +
                     "to the project as a new file."
@@ -638,10 +714,12 @@ function fileRow(f) {
       }));
 
       row.append(mini(moved ? "take what the team has" :
-                      "take my colleague’s version", "danger", () => {
+                      "take my colleague’s version", "danger", async () => {
+        const pics = await conflictPics(f, k);
         ask({
           title: moved ? "Go with the team’s version?"
                        : "Take your colleague’s version?",
+          images: pics,
           lines: why.concat([
             moved ? "“" + f.path + "” will disappear from your " +
                     "folder, the same as it did for everybody else."
@@ -779,6 +857,16 @@ function syncBar() {
   $("sel-count").textContent = m
     ? (n ? n + " selected" : "nothing selected")
     : "nothing here can be submitted";
+
+  // «і відправити на перевірку» — лише коли серед вибраного справді є файл
+  // твоєї задачі, яку ще можна туди відправити. Інакше галочки немає зовсім:
+  // порожній вимикач під рукою щодня лише збиває.
+  const rt = reviewTasks();
+  $("c-review-l").classList.toggle("hidden", !rt.length);
+  if (!rt.length) $("c-review").checked = false;
+  $("c-review-t").textContent = rt.length === 1
+    ? "send “" + rt[0].name + "” to review"
+    : "send " + rt.length + " tasks to review";
 }
 
 $("sel-all").onchange = () => {
@@ -840,28 +928,83 @@ function renderHistory() {
     box.innerHTML = "<div class='empty'>No history yet — this file was never submitted</div>";
     return;
   }
+  // «Ця версія — у тебе». Для незміненого файлу svn знає це сам: це
+  // найновіша з історії, не новіша за ревізію файлу в копії. Для зміненого —
+  // див. markDiskVersion нижче.
+  let have = null;
+  if (!hist.dirty && hist.base != null)
+    have = (hist.rows.find(r => Number(r.rev) <= hist.base) || {}).rev || null;
   const ACT = { A: "added", M: "changed", D: "deleted", R: "replaced" };
+  const withPics = srvOn() && PREVIEWABLE.test(hist.path);
   for (const r of hist.rows) {
     const d = document.createElement("div"); d.className = "hr";
+    d.dataset.rev = r.rev;
+    if (withPics) {
+      const th = document.createElement("div");
+      th.className = "hr-thumb";
+      d.append(th);
+    }
+    const body = document.createElement("div"); body.className = "hr-main";
     const head = document.createElement("div"); head.className = "meta";
     head.textContent = "commit " + r.rev + " · " + r.author + " · " + r.date +
       (ACT[r.action] ? " · " + ACT[r.action] : "");
+    if (String(r.rev) === String(have)) {
+      head.append(" ", chip("you have this version", "have"));
+    }
     const m = document.createElement("div"); m.className = "m";
     m.textContent = r.msg || "(no note)";
-    d.append(head, m);
+    body.append(head, m);
     if (r.renamed_from) {
       const rn = document.createElement("div"); rn.className = "dim";
       rn.textContent = "back then it was called “" + r.renamed_from + "”";
-      d.append(rn);
+      body.append(rn);
     }
     const bar = document.createElement("div"); bar.className = "hr-bar";
     bar.append(mini("👁 Save a copy…", "", () => saveAs(r.rev)));
     const rb = mini("⟲ Bring back this version", "warn", () => restore(r));
     rb.disabled = !!(hist.dirty || hist.locked_by);
     bar.append(rb);
-    d.append(bar);
+    body.append(bar);
+    d.append(body);
     box.append(d);
   }
+  if (withPics || hist.dirty) versionPics(hist.path);
+}
+
+/* Картинки версій — із сервера, одним запитом на весь файл: він сам іде
+   крізь перейменування і віддає по картинці на кожен різний вміст. Коли
+   відповідь доїхала, людина могла вже відкрити інший файл — тоді мовчимо. */
+async function versionPics(path) {
+  let v = null;
+  try { v = await api().file_versions(path); } catch (e) { v = null; }
+  if (!hist || hist.path !== path || view !== "file" || !v || !v.ok) return;
+  for (const row of document.querySelectorAll("#fh-rows .hr")) {
+    const got = v.versions[row.dataset.rev];
+    const th = row.querySelector(".hr-thumb");
+    if (!th) continue;
+    if (got && got.preview) {
+      const im = document.createElement("img");
+      im.src = got.preview; im.alt = "";
+      th.replaceChildren(im);
+    } else if (got && got.state === "pending") {
+      th.textContent = "preparing…";
+      th.title = "the server has not made a picture of this version yet";
+    }
+  }
+  if (hist.dirty) markDiskVersion(path);
+}
+
+/* Файл змінено, тож svn не скаже, котра це версія. Але вміст може
+   збігатися з однією з них — скажімо, людина щойно повернула стару й ще не
+   здала. Сервер дає SHA-1 кожної версії; порахувати свою — нічого не качаючи.
+   Великий файл читається секунди, тому це окремий крок, а не частина відкриття. */
+async function markDiskVersion(path) {
+  let w = null;
+  try { w = await api().which_version(path); } catch (e) { w = null; }
+  if (!hist || hist.path !== path || view !== "file" || !w || !w.rev) return;
+  const row = document.querySelector("#fh-rows .hr[data-rev='" + w.rev + "']");
+  const head = row && row.querySelector(".meta");
+  if (head) head.append(" ", chip("your file on disk is this version — not submitted", "have"));
 }
 
 async function saveAs(rev) {
@@ -890,9 +1033,9 @@ function restore(r) {
     if (!a.ok) return;
     busy(true, "Bringing back commit " + r.rev + "… a big file can take a while");
     api().restore_version(hist.path, r.rev)
-      .then(m => toast(m, 10000))
-      .catch(e => toast(clean(e), 10000))
-      .then(() => { busy(false); showView("files"); return refresh(); });
+      .then(m => { busy(false); toast(m, 10000); })
+      .catch(e => { busy(false); fail(e, 10000); })
+      .then(() => { showView("files"); return refresh(); });
   });
 }
 
@@ -1096,6 +1239,10 @@ function entryRow(it) {
   if (it.status === "unversioned" && it.on_disk) row.append(chip("new", "unversioned"));
   if (it.remote_change && it.on_disk) row.append(chip("newer on the server", "remote"));
   if (!it.on_disk) row.append(chip("not downloaded yet", "remote"));
+  if (!it.link && !it.nested) {
+    const tc = taskChip(it.path);
+    if (tc) row.append(tc);
+  }
 
   if (it.kind === "file") {
     const lb = document.createElement("button");
@@ -1134,11 +1281,13 @@ function entryRow(it) {
 /* Головна дія бінарника — «зайняти й відкрити». Порядок не косметичний:
    якщо відкрити спершу, а зайняти потім, людина попрацює в файлі, у який
    не має права писати, і зданий чужий день зникне при першому ж збереженні. */
-async function openIt(it) {
+async function openIt(it, after) {
+  // Що оновити потім: у провіднику — поточну теку, у задачах — задачу.
+  after = after || (() => openDir(brPath));
   const free = it.binary && !it.lock_mine && !it.lock_owner;
   if (free && pref("lock_open_silent")) {     // людина попросила не питати
     return act("open_file", [it.path, true], "Locking and opening…")
-      .then(() => openDir(brPath));
+      .then(after);
   }
   if (free) {
     const a = await ask({
@@ -1155,7 +1304,7 @@ async function openIt(it) {
       api().set_pref("lock_open_silent", a.ok).catch(() => {});
     if (a.ok) {
       return act("open_file", [it.path, true], "Locking and opening…")
-        .then(() => openDir(brPath));
+        .then(after);
     }
     if (!a.alt) return;
   }
@@ -1188,7 +1337,7 @@ function sideEmpty() {
   $("br-side").innerHTML = "<div class='br-empty'>Pick a file to see it here</div>";
 }
 
-function renderSide(it, d) {
+async function renderSide(it, d) {
   const side = $("br-side");
   side.innerHTML = "";
   if (d && d.preview) {
@@ -1221,6 +1370,124 @@ function renderSide(it, d) {
     }
     side.append(mini("📂 Show in folder", "", () => api().reveal(it.path)));
     side.append(mini("🕘 History", "", () => openHistory(it.path)));
+  }
+  if (!srvOn()) return;
+
+  // --- те, що знає сервер студії ------------------------------------------
+  // Картинка: для файлу, якого ще нема на диску, своєї немає — беремо ту,
+  // що сервер уже витяг. Місце — те саме, згори панелі.
+  if (!(d && d.preview) && PREVIEWABLE.test(it.name)) {
+    const key = it.path + "@";
+    const put = uri => {
+      if (!uri || brSel !== it.path || side.querySelector(".br-thumb")) return;
+      const img = document.createElement("img");
+      img.className = "br-thumb"; img.src = uri; img.alt = "";
+      img.title = "the picture from the server — the newest submitted version";
+      side.prepend(img);
+    };
+    if (THUMBS.has(key)) put(THUMBS.get(key));
+    else api().previews([{ path: it.path, rev: null }]).then(r => {
+      THUMBS.set(key, r[key] || null); put(r[key]);
+    }).catch(() => {});
+  }
+
+  const ts = tasksFor(it.path);
+  if (ts.length) {
+    const sec = sideSection(side, "Task");
+    for (const t of ts.slice(0, 3)) sec.append(taskLine(t));
+  }
+
+  side.append(mini("🌐 On the studio website", "", () =>
+    api().open_web("file", it.path).catch(e => fail(e))));
+
+  if (it.kind === "file" && (/\.blend$/i.test(it.name) || USABLE.test(it.name))) {
+    const wait = sideSection(side, "Links");
+    wait.append(dimLine("asking the server…"));
+    let l = null;
+    try { l = await api().file_links(it.path); } catch (e) { l = null; }
+    if (brSel !== it.path) return;
+    wait.parentNode.remove();
+    if (l && l.ok) renderLinks(side, l);
+  }
+}
+
+/* --- що сцена тягне за собою і хто використовує файл -------------------- */
+const LINK_WORD = {
+  missing: ["missing", "the path points into the project, but there is no such file"],
+  case: ["letter case", "works on Windows, breaks on the Linux render farm"],
+  absolute: ["absolute path", "points into the project by a full path — works only on the author’s machine"],
+  outside: ["outside the project", "a relative path that leads out of the project"],
+};
+
+function sideSection(side, title) {
+  const wrap = document.createElement("div");
+  wrap.className = "side-sec";
+  const h = document.createElement("div");
+  h.className = "side-h"; h.textContent = title;
+  const body = document.createElement("div");
+  body.className = "side-b";
+  wrap.append(h, body);
+  side.append(wrap);
+  return body;
+}
+
+function dimLine(text, title) {
+  const d = document.createElement("div");
+  d.className = "side-l dim-l"; d.textContent = text;
+  if (title) d.title = title;
+  return d;
+}
+
+function renderLinks(side, l) {
+  const dp = l.deps;
+  if (dp) {
+    const sec = sideSection(side, "Uses");
+    if (dp.state === "pending") {
+      sec.append(dimLine("the server has not read this scene yet — try again in a minute"));
+    } else if (dp.state !== "ok") {
+      sec.append(dimLine("could not read what it uses", dp.note || ""));
+    } else {
+      const c = dp.counts || {};
+      const parts = [];
+      if (dp.uses) parts.push(dp.uses + (dp.uses === 1 ? " file" : " files") + " of the project");
+      if (c.external) parts.push(c.external + " from shared storage");
+      if (c.packed) parts.push(c.packed + " packed inside");
+      sec.append(dimLine(parts.length ? parts.join(" · ") : "nothing — the scene is self-contained",
+        c.external ? "“from shared storage” — full paths outside SVN (X:\\…), read live " +
+                     "from the NAS. That is how the studio does it, not a mistake." : ""));
+      if (dp.newer_n) {
+        const w = document.createElement("div");
+        w.className = "side-l warn-l";
+        w.textContent = (dp.newer_n === 1 ? "1 file it uses is" : dp.newer_n + " files it uses are") +
+          " newer on the server — click “Get latest” before opening";
+        w.title = dp.newer.join("\n");
+        sec.append(w);
+      }
+      for (const p of dp.problems || []) {
+        const [word, why] = LINK_WORD[p.state] || [p.state, ""];
+        const r = document.createElement("div");
+        r.className = "side-l bad-l";
+        r.textContent = "⚠ " + p.name + " — " + word;
+        r.title = why + "\n" + p.raw;
+        sec.append(r);
+      }
+    }
+  }
+  const ub = l.used_by;
+  if (ub && !ub.error) {
+    const sec = sideSection(side, "Used by");
+    if (!ub.n) {
+      sec.append(dimLine(ub.complete ? "no scene uses this file"
+        : "no scene so far — the server is still reading the project"));
+    } else {
+      for (const u of ub.users.slice(0, 8)) {
+        const r = document.createElement("div");
+        r.className = "side-l mono-l"; r.textContent = u; r.title = u;
+        sec.append(r);
+      }
+      if (ub.n > 8) sec.append(dimLine("…and " + (ub.n - 8) + " more"));
+      sec.append(dimLine("renaming or deleting this file breaks them"));
+    }
   }
 }
 
@@ -1276,13 +1543,15 @@ async function folderLock(it) {
 
 async function act(method, args, text) {
   busy(true, text);
+  let failed = null;
   try {
     const r = await api()[method].apply(null, args || []);
     if (typeof r === "string") toast(r, 8000);
   } catch (e) {
-    toast(clean(e), 9000);
+    failed = e;
   }
   busy(false);
+  if (failed) fail(failed);           // вікно відмови — вже без «Working…» під ним
   await refresh();
 }
 
@@ -1415,13 +1684,53 @@ $("b-commit").onclick = async () => {
   const msg = $("c-msg").value.trim();
   if (!selected.size) return toast("Tick what you want to submit");
   if (!msg) return toast("Write a short note about what you did — your team will see it in the history");
+
+  // Видалення текстури чи бібліотеки ламає сцени, що на неї посилаються, — і
+  // ламає мовчки: колега відкриє сцену без неї аж завтра. Сервер знає, хто
+  // що використовує, тож питаємо ДО здачі. Немає сервера — не питаємо.
+  const byPath = new Map(((st && st.files) || []).map(f => [f.path, f]));
+  const gone = [...selected].filter(p => {
+    const f = byPath.get(p);
+    return f && (f.status === "missing" || f.status === "deleted");
+  });
+  if (gone.length && srvOn()) {
+    let ub = {};
+    busy(true, "Checking what uses these files…");
+    try { ub = await api().used_by_many(gone); } catch (e) { ub = {}; }
+    busy(false);
+    const hit = Object.keys(ub);
+    if (hit.length) {
+      const scenes = [...new Set(hit.flatMap(p => ub[p]))];
+      const a = await ask({
+        title: scenes.length === 1 ? "A scene still uses what you are deleting"
+                                   : "Scenes still use what you are deleting",
+        factsFirst: true,
+        facts: hit.slice(0, 8).map(p => [p, ub[p].length === 1
+          ? "used by 1 scene" : "used by " + ub[p].length + " scenes"]),
+        lines: ["After this submit they will open without it:"]
+          .concat(scenes.slice(0, 6).map(s => ({ text: s, mono: true })))
+          .concat(scenes.length > 6 ? ["…and " + (scenes.length - 6) + " more"] : [])
+          .concat(["If the file moved somewhere else, those scenes have to be " +
+                   "pointed at the new place first."]),
+        ok: "Delete anyway", danger: true,
+      });
+      if (!a.ok) return;
+    }
+  }
+
+  const review = $("c-review").checked && !$("c-review-l").classList.contains("hidden")
+    ? reviewTasks().map(t => t.id) : [];
   busy(true, "Submitting… big files can take a while");
+  let failed = null;
   try {
     toast(await api().do_commit(Array.from(selected), msg,
-                               $("c-keep").checked), 9000);
+                               $("c-keep").checked, review), 9000);
     selected.clear(); $("c-msg").value = ""; delete drafts[pid()];
-  } catch (e) { toast(clean(e), 9000); }
+    $("c-review").checked = false;
+  } catch (e) { failed = e; }
   busy(false);
+  if (failed) fail(failed);
+  if (review.length) loadTasks(true);
   await refresh();
 };
 
@@ -1567,6 +1876,10 @@ document.querySelectorAll(".tab").forEach(b => b.onclick = async () => {
   const t = b.dataset.tab;
   if (t === "browse") { showView("browse"); return openDir(brPath); }
   if (t === "history") { showView("log"); return loadLog(); }
+  if (t === "tasks") {
+    showView("tasks"); renderTaskList();
+    return loadTasks(true);           // вкладку відкрили — хочуть свіже
+  }
   showView("files"); renderFiles();
 });
 
@@ -1668,9 +1981,23 @@ async function renderCommit() {
 
   const n = d.total || 0;
   count.textContent = n === 1 ? "1 changed file" : n + " changed files";
+  // Картинки змінених файлів — як у переглядачі на сайті. Місце під них є в
+  // кожному рядку, щоб імена стояли рівно, а не стрибали там, де картинка
+  // доїхала. Видалений файл показуємо таким, яким він був ДО коміту.
+  const pics = srvOn();
+  const want = [];
   for (const f of d.files) {
     const row = document.createElement("div");
     row.className = "ch-f";
+    if (pics) {
+      const th = document.createElement("span");
+      th.className = "ch-thumb";
+      row.append(th);
+      if (f.kind !== "dir" && PREVIEWABLE.test(f.path) && want.length < 40) {
+        const r = f.action === "D" ? Number(rev) - 1 : Number(rev);
+        want.push({ path: f.path, rev: r, th: th });
+      }
+    }
     const mark = document.createElement("span");
     mark.className = "ch-mark " + f.action;
     mark.textContent = { A: "+", M: "●", D: "−", R: "↻" }[f.action] || "●";
@@ -1722,6 +2049,38 @@ async function renderCommit() {
     list.append(w);
   }
   syncRevBar();
+  if (want.length) fillThumbs(want, () => logRev === rev);
+}
+
+/* Картинки з сервера в заготовлені місця. Уже бачене — з пам'яті одразу,
+   решту — одним запитом (сервер качає їх паралельно). still() — чи людина
+   досі дивиться туди ж: відповідь могла приїхати, коли вже обрано інше. */
+const THUMBS = new Map();           // "шлях@ревізія" -> data:URI | null
+
+async function fillThumbs(want, still) {
+  const put = (w, uri) => {
+    if (!uri) return;
+    const im = document.createElement("img");
+    im.src = uri; im.alt = "";
+    w.th.replaceChildren(im);
+  };
+  const ask_ = [];
+  for (const w of want) {
+    const key = w.path + "@" + (w.rev == null ? "" : w.rev);
+    if (THUMBS.has(key)) put(w, THUMBS.get(key));
+    else ask_.push(w);
+  }
+  if (!ask_.length) return;
+  let got = {};
+  try {
+    got = await api().previews(ask_.map(w => ({ path: w.path, rev: w.rev })));
+  } catch (e) { return; }
+  for (const w of ask_) {
+    const key = w.path + "@" + (w.rev == null ? "" : w.rev);
+    // «ще готується» не запам'ятовуємо: за хвилину картинка вже буде
+    if (got[key]) THUMBS.set(key, got[key]);
+    if (still()) put(w, got[key]);
+  }
 }
 
 /* --- відкат просто з історії -------------------------------------------
@@ -1781,6 +2140,466 @@ $("ch-restore").onclick = async () => {
   renderCommit();
 };
 
+/* --- сервер студії: задачі ----------------------------------------------
+   Усе нижче — доповнення. Немає сервера з API (інша програма, старий образ,
+   офлайн) — вкладки задач немає, позначок немає, картинок немає, а решта
+   APSVN працює так само. Жодна з цих функцій не має права зламати список
+   змін чи здачу, тому кожна невдача тут тиха. */
+
+// Що сервер уміє показати картинкою і що може бути залежністю .blend —
+// ті самі списки, що в server_api.py (а там — як на сервері).
+const PREVIEWABLE = /\.(blend|psd|psb|png|jpe?g|webp|gif|bmp|tga|tiff?)$/i;
+const USABLE = /\.(blend|png|jpe?g|tga|tiff?|exr|hdr|bmp|webp|gif|psd|dds|jp2|cin|dpx|mp4|mov|avi|mkv|webm|mpe?g|ogv|wav|mp3|ogg|flac|aac|m4a|ttf|otf|woff2?|pfb|abc|usd[acz]?|vdb)$/i;
+const STATUS_NAME = { todo: "To do", wip: "In progress", wfa: "Review",
+                      retake: "Retake", done: "Done" };
+
+let srvInfo = null;               // server_status()
+let tasksData = null;             // tasks_overview()
+let tasksSigLast = null;          // щоб не перемальовувати без змін
+let taskSel = null;               // відкрита праворуч задача
+let taskDone = null;              // мої завершені — лише на вимогу
+let srvPid = null;                // для якого проєкту все це
+
+const srvOn = () => !!(srvInfo && srvInfo.ok);
+const tasksOn = () => !!(srvInfo && srvInfo.ok && srvInfo.tasks);
+const myTasks = () => ((tasksData && tasksData.tasks) || []).filter(t => t.mine);
+
+async function initServer() {
+  const mine = gen;
+  let s = null;
+  try { s = await api().server_status(false); } catch (e) { s = null; }
+  if (mine !== gen) return;
+  srvInfo = s;
+  // «ще невідомо» — копію ще не читали (іде передача). Спитаємо трохи згодом.
+  // Сервер не відповів — теж спитаємо ще, коли мине його пам'ять про невдачу
+  // (хвилина; для відмови в паролі — п'ять). Інакше після ранку без мережі
+  // задачі не з'явилися б до перезапуску програми.
+  const again = !s ? 65000 : s.why === "later" ? 4000
+    : s.why === "error" ? ((s.code === 401 || s.code === 429) ? 310000 : 65000)
+    : 0;
+  if (again) setTimeout(() => { if (mine === gen) initServer(); }, again);
+  renderTaskBadge();
+  if (tasksOn()) loadTasks(false);
+  else if (view === "tasks") { showView("files"); renderFiles(); }
+}
+
+async function loadTasks(force) {
+  if (!tasksOn()) return;
+  const mine = gen;
+  let o = null;
+  try { o = await api().tasks_overview(!!force); } catch (e) { o = null; }
+  if (mine !== gen || !o) return;
+  tasksData = o;
+  const sig = JSON.stringify([o.error || "", (o.tasks || []).map(
+    t => [t.id, t.status, t.assignees, t.local, t.due, t.overdue])]);
+  const changed = sig !== tasksSigLast;
+  tasksSigLast = sig;
+  renderTaskBadge();
+  // Як і список змін: без змін — не перемальовуємо, інакше щопівхвилини
+  // картка під курсором втрачала б підсвітку, а прокрутка — місце.
+  if (changed && view === "tasks") renderTaskList();
+  if (changed && view === "files") renderFiles();   // позначки в рядках
+  else syncBar();
+}
+
+// Задачі, що накривають файл: на ньому самому або на теці над ним (так само
+// рахує й сервер, зокрема для м'якого локу). Найближча — першою.
+function tasksFor(path) {
+  const p = String(path || "").replace(/^\/+|\/+$/g, "");
+  return ((tasksData && tasksData.tasks) || [])
+    .filter(t => t.local != null &&
+            (t.local === p || t.local === "" || p.startsWith(t.local + "/")))
+    .sort((a, b) => b.local.length - a.local.length);
+}
+
+function taskSig(path) {
+  return tasksFor(path).map(t => t.id + t.status + t.assignees.join()).join("|");
+}
+
+/* Позначка задачі в рядку. Своя — статусом і кольором; чужа — ІМЕНЕМ: саме
+   це людина має знати ще до того, як спробує зайняти файл. Якщо в проєкті
+   ввімкнено м'який лок, сервер однаково не дасть — але краще знати наперед,
+   ніж дізнатися з відмови. */
+function taskChip(path) {
+  const ts = tasksFor(path);
+  if (!ts.length) return null;
+  return chipOfTask(ts.find(x => x.mine) || ts[0]);
+}
+
+function chipOfTask(t) {
+  const c = document.createElement("button");
+  if (t.mine) {
+    // Коротко: у рядку поруч ще статус файлу, кнопки й лок, а ім'я файлу
+    // важливіше за все це. Тип і термін — у підказці та на вкладці задач.
+    c.className = "chip task st-" + t.status;
+    c.textContent = "📋 " + t.status_name;
+    c.title = "your task: " + (t.type || "task") + " · " + t.status_name +
+      (t.due ? " — due " + t.due : "") + ". Click to open it.";
+  } else {
+    const who = t.assignees.join(", ") || "nobody yet";
+    c.className = "chip task other";
+    c.textContent = "📋 " + who;
+    c.title = (t.type || "task") + " · " + t.status_name + " — assigned to " + who +
+      ". If the project uses soft locks, only they or a supervisor can lock and submit it.";
+  }
+  c.onclick = ev => { ev.stopPropagation(); openTask(t.id); };
+  return c;
+}
+
+function taskLine(t) {
+  const r = document.createElement("div");
+  r.className = "side-l";
+  r.append(chipOfTask(t));
+  if (t.is_dir) {                   // задача на теці накриває і цей файл
+    const w = document.createElement("span");
+    w.className = "dim-l"; w.textContent = " — on the folder " + (t.local || "(project)");
+    r.append(w);
+  }
+  return r;
+}
+
+// Мої задачі, які ця здача може відправити на перевірку: вибрано сам файл
+// задачі, щось усередині теки задачі або теку, всередині якої вона лежить.
+function reviewTasks() {
+  if (!tasksData || !selected.size) return [];
+  const out = new Map();
+  for (const p of selected) {
+    for (const t of tasksData.tasks || []) {
+      if (!t.mine || t.local == null ||
+          !["todo", "wip", "retake"].includes(t.status)) continue;
+      if (t.local === p || t.local === "" || p.startsWith(t.local + "/") ||
+          t.local.startsWith(p + "/"))
+        out.set(t.id, t);
+    }
+  }
+  return [...out.values()];
+}
+
+function renderTaskBadge() {
+  $("tab-tasks-btn").classList.toggle("hidden", !tasksOn());
+  const mine = myTasks();
+  // рахуємо те, що чекає ДІЇ від людини; «на перевірці» чекає керівника
+  const todo = mine.filter(t => t.status !== "wfa").length;
+  const hot = mine.some(t => t.status === "retake" || t.overdue);
+  const b = $("tasks-n");
+  b.textContent = todo ? String(todo) : "";
+  b.classList.toggle("hidden", !todo);
+  b.classList.toggle("hot", hot);
+  $("tab-tasks-btn").title = hot ? "some of your tasks were sent back, or are overdue" : "";
+}
+
+const TASK_GROUPS = [
+  ["retake", "Sent back", "your supervisor asked for changes"],
+  ["wip", "In progress", "what you are working on"],
+  ["todo", "To do", "not started yet"],
+  ["wfa", "Waiting for review", "your supervisor will look at these"],
+];
+
+function taskOrder(a, b) {
+  if (a.overdue !== b.overdue) return a.overdue ? -1 : 1;
+  if ((a.due || "9") !== (b.due || "9")) return (a.due || "9") < (b.due || "9") ? -1 : 1;
+  return a.name.localeCompare(b.name);
+}
+
+function renderTaskList() {
+  const box = $("tasks-list");
+  $("tasks-title").textContent = "My tasks in “" + ((st && st.name) || "") + "”";
+  const err = tasksData && !tasksData.ok && tasksData.error;
+  $("tasks-warn").textContent = err ? "Could not refresh the tasks: " + err : "";
+  $("tasks-warn").classList.toggle("hidden", !err);
+  if (!tasksData) {
+    box.innerHTML = "<div class='empty'>Reading your tasks…</div>";
+    return;
+  }
+  const out = [], want = [];
+  const card = t => {
+    const c = document.createElement("div");
+    c.className = "tk" + (t.id === taskSel ? " on" : "") + (t.gone ? " gone" : "");
+    const th = document.createElement("div");
+    th.className = "tk-thumb";
+    th.textContent = t.is_dir ? "📁" : "📋";
+    if (!t.is_dir && t.local != null && PREVIEWABLE.test(t.local))
+      want.push({ path: t.local, rev: null, th: th });
+    const body = document.createElement("div");
+    body.className = "tk-body";
+    const nm = document.createElement("div");
+    nm.className = "tk-name"; nm.textContent = t.name;
+    const sub = document.createElement("div");
+    sub.className = "tk-sub";
+    const bits = [];
+    if (t.type) bits.push(t.type);
+    if (t.local == null) bits.push("not in your copy of the project");
+    else if (t.local.includes("/")) bits.push(t.local.slice(0, t.local.lastIndexOf("/") + 1));
+    sub.textContent = bits.join(" · ");
+    body.append(nm, sub);
+    if (t.due) {
+      const due = document.createElement("div");
+      due.className = "tk-due" + (t.overdue ? " late" : "");
+      due.textContent = (t.overdue ? "overdue — was due " : "due ") + t.due;
+      body.append(due);
+    }
+    c.append(th, body, chip(t.status_name, "st st-" + t.status));
+    c.onclick = () => openTask(t.id);
+    return c;
+  };
+  const head = (title, n, hint) => {
+    const h = document.createElement("div");
+    h.className = "grp";
+    h.innerHTML = "<span class='gt'></span><span class='gn'></span><span class='gh'></span>";
+    h.children[0].textContent = title;
+    h.children[1].textContent = n;
+    h.children[2].textContent = hint;
+    return h;
+  };
+
+  const mine = myTasks();
+  for (const [status, title, hint] of TASK_GROUPS) {
+    const rows = mine.filter(t => t.status === status).sort(taskOrder);
+    if (!rows.length) continue;
+    out.push(head(title, rows.length, hint));
+    for (const t of rows) out.push(card(t));
+  }
+  if (!mine.length) {
+    const e = document.createElement("div");
+    e.className = "empty tasks-empty";
+    e.textContent = "Nothing assigned to you in this project right now 🎉";
+    out.push(e);
+  }
+  if (taskDone === null) {
+    const b = mini("Show my finished tasks", "", async () => {
+      try { taskDone = await api().tasks_done(); } catch (e) { return fail(e); }
+      renderTaskList();
+    });
+    b.classList.add("tk-more");
+    out.push(b);
+  } else if (taskDone.length) {
+    out.push(head("Done", taskDone.length, "accepted by your supervisor"));
+    for (const t of taskDone) out.push(card(t));
+  } else {
+    const e = document.createElement("div");
+    e.className = "tk-none"; e.textContent = "No finished tasks yet.";
+    out.push(e);
+  }
+  const top = box.scrollTop;
+  box.replaceChildren(...out);
+  box.scrollTop = top;
+  if (want.length) fillThumbs(want, () => view === "tasks");
+}
+
+async function openTask(id) {
+  taskSel = id;
+  if (view !== "tasks") showView("tasks");
+  renderTaskList();
+  const side = $("task-side");
+  side.innerHTML = "<div class='br-empty'>Reading the task…</div>";
+  let d = null;
+  try { d = await api().task_detail(id); }
+  catch (e) {
+    if (taskSel === id) side.innerHTML = "<div class='br-empty'>Could not read this task</div>";
+    return fail(e);
+  }
+  if (taskSel !== id) return;
+  renderTaskSide(d);
+}
+
+function agoEpoch(sec) {
+  if (!sec) return "";
+  const d = new Date(sec * 1000);
+  const pad = n => String(n).padStart(2, "0");
+  return ago(d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) +
+             " " + pad(d.getHours()) + ":" + pad(d.getMinutes()));
+}
+
+// Що сталося — людськими словами. Коментар до зміни статусу («руки
+// переробити») показується окремою бульбашкою: це найважливіше в стрічці.
+const EVENT_TEXT = {
+  created: e => "created the task" + (e.new ? " for " + e.new : ""),
+  status: e => (e.old ? (STATUS_NAME[e.old] || e.old) + " → " : "") +
+               (STATUS_NAME[e.new] || e.new),
+  auto: e => (STATUS_NAME[e.old] || e.old) + " → " + (STATUS_NAME[e.new] || e.new) +
+             " — on the first commit" + (e.rev ? " (commit " + e.rev + ")" : ""),
+  comment: () => "commented",
+  assign: e => "assigned it to " + (e.new || "nobody"),
+  edit: e => "changed the " + (e.comment || "task") + ": " + (e.old || "—") +
+             " → " + (e.new || "—"),
+  moved: e => "the file moved: " + e.old + " → " + e.new,
+  gone: () => "the file was removed from the project",
+  back: () => "the file is back in the project",
+};
+
+// Незданого рецензент не побачить. Вміст теки задачі теж рахується.
+function unsubmittedUnder(local) {
+  if (local == null) return [];
+  return ((st && st.files) || []).filter(f => isMine(f) &&
+    (local === "" || f.path === local || f.path.startsWith(local + "/")));
+}
+
+function renderTaskSide(d) {
+  const side = $("task-side");
+  side.innerHTML = "";
+  if (d.preview) {
+    const img = document.createElement("img");
+    img.className = "br-thumb"; img.src = d.preview; img.alt = "";
+    side.append(img);
+  }
+  const nm = document.createElement("div");
+  nm.className = "br-name"; nm.textContent = d.name;
+  side.append(nm);
+  const where = document.createElement("div");
+  where.className = "tk-path";
+  where.textContent = d.local != null ? (d.local || "(the whole project)")
+                                      : d.path + " — not in your copy";
+  side.append(where);
+
+  const fact = (k, v, cls) => {
+    if (v == null || v === "") return;
+    const r = document.createElement("div");
+    r.className = "br-fact";
+    const a = document.createElement("span"); a.textContent = k;
+    const b = document.createElement("b"); b.textContent = v;
+    if (cls) b.className = cls;
+    r.append(a, b); side.append(r);
+  };
+  const stRow = document.createElement("div");
+  stRow.className = "br-fact";
+  const stK = document.createElement("span"); stK.textContent = "status";
+  stRow.append(stK, chip(d.status_name, "st st-" + d.status));
+  side.append(stRow);
+  fact("type", d.type);
+  fact("assigned to", d.assignees.join(", ") || "nobody yet");
+  if (d.due) fact("due", d.due + (d.overdue ? " — overdue" : ""), d.overdue ? "late" : "");
+  fact("set by", d.created_by);
+  if (d.gone) fact("file", "no longer in the project", "late");
+
+  // Кроки — лише дозволені виконавцю; «прийняти» й «повернути» —
+  // справа керівника, і кнопок, які завжди відмовлять, тут немає.
+  const acts = document.createElement("div");
+  acts.className = "tk-acts";
+  for (const to of d.moves || []) {
+    if (to === "wfa") {
+      const b = mini("✔ Send to review", "go", () => sendToReview(d));
+      acts.append(b);
+    } else if (to === "wip") {
+      acts.append(mini(d.status === "todo" ? "▶ Start working" : "↩ Back to work",
+                       "", () => moveTask(d, "wip")));
+    }
+  }
+  if (acts.children.length) side.append(acts);
+  if (!d.mine)
+    side.append(dimLine("Assigned to " + (d.assignees.join(", ") || "nobody") +
+                        " — only they or a supervisor move it."));
+  else if (d.status === "wfa")
+    side.append(dimLine("Waiting for your supervisor — they accept it or send it back."));
+  else if (d.status === "done")
+    side.append(dimLine("Accepted — nothing left to do here."));
+
+  // Файл задачі — ті самі дії, що в провіднику, і з тим самим «зайняти
+  // перед відкриттям».
+  if (d.local != null) {
+    const f = ((st && st.files) || []).find(x => x.path === d.local) || {};
+    if (d.on_disk && d.openable) {
+      const it = { path: d.local, name: d.name, binary: d.binary,
+                   lock_mine: f.lock_mine, lock_owner: f.lock_owner };
+      side.append(mini(d.binary && !f.lock_mine ? "🔓 Lock and open" : "▶ Open", "",
+                       () => openIt(it, () => loadTasks(true))));
+    }
+    if (d.on_disk || d.is_dir)
+      side.append(mini("📂 Show in folder", "", () => api().reveal(d.local)));
+    if (d.on_disk)
+      side.append(mini("🕘 History", "", () => openHistory(d.local)));
+  }
+  side.append(mini("🌐 On the studio website", "", () =>
+    (d.local != null ? api().open_web("file", d.local)
+                     : api().open_web("repo", d.path)).catch(e => fail(e))));
+
+  // Коментар — без зміни статусу: питання керівнику, «так і задумано» тощо.
+  const sec = sideSection(side, "Comments and history");
+  const ta = document.createElement("textarea");
+  ta.className = "tk-comment"; ta.rows = 2;
+  ta.placeholder = "Write a comment…";
+  const send = mini("Send", "", async () => {
+    const text = ta.value.trim();
+    if (!text) return;
+    send.disabled = true;
+    try { await api().task_comment(d.id, text); }
+    catch (e) { send.disabled = false; return fail(e); }
+    openTask(d.id);
+  });
+  ta.onkeydown = e => { if (e.key === "Enter" && e.ctrlKey) send.click(); };
+  const row = document.createElement("div");
+  row.className = "tk-comment-row";
+  row.append(ta, send);
+  sec.append(row);
+
+  for (const e of d.events || []) {
+    const ev = document.createElement("div");
+    ev.className = "tk-ev";
+    const h = document.createElement("div");
+    h.className = "tk-ev-h";
+    const who = document.createElement("b"); who.textContent = e.user || "server";
+    const what = (EVENT_TEXT[e.kind] || (() => e.kind))(e);
+    h.append(who, " " + what);
+    const t = document.createElement("span");
+    t.className = "tk-ev-t"; t.textContent = agoEpoch(e.at);
+    h.append(t);
+    ev.append(h);
+    if (e.comment && e.kind !== "edit") {
+      const c = document.createElement("div");
+      c.className = "tk-ev-c"; c.textContent = e.comment;
+      ev.append(c);
+    }
+    sec.append(ev);
+  }
+}
+
+async function moveTask(d, to, comment) {
+  busy(true, "Updating the task…");
+  let r = null, failed = null;
+  try { r = await api().task_move(d.id, to, comment || ""); }
+  catch (e) { failed = e; }
+  busy(false);
+  if (failed) return fail(failed);
+  toast(r, 6000);
+  await loadTasks(true);
+  openTask(d.id);
+}
+
+async function sendToReview(d) {
+  const lines = ["Your supervisor will look at it and either accept it or send " +
+                 "it back with notes."];
+  // Рецензент дивиться те, що на сервері. Нездане він не побачить — і
+  // поверне задачу за роботу, яку людина насправді зробила.
+  const dirty = unsubmittedUnder(d.local);
+  if (dirty.length)
+    lines.push({ text: (dirty.length === 1 ? "You have an unsubmitted change here"
+                        : "You have " + dirty.length + " unsubmitted changes here") +
+                       " — your supervisor will not see it. Submit first.", warn: true });
+  const a = await ask({
+    title: "Send “" + d.name + "” to review?",
+    lines: lines,
+    input: { placeholder: "A note for your supervisor (optional)" },
+    ok: "Send to review",
+  });
+  if (a.ok) moveTask(d, "wfa", a.text);
+}
+
+// Обидві сторони конфлікту картинками — з диска (svn лишає поруч копію того,
+// що приїхало від колеги), а сервер — лише якщо копії нема. Без картинок
+// діалог той самий, що й був.
+async function conflictPics(f, k) {
+  if (k === "prop") return null;
+  let pv = null;
+  try { pv = await api().conflict_previews(f.path); } catch (e) { pv = null; }
+  if (!pv || (!pv.mine && !pv.theirs)) return null;
+  const theirs = k === "tree" ? "The team’s — moved or deleted"
+    : k === "obstructed" ? "The team’s file"
+    : "Your colleague’s" + (pv.theirs_rev ? " — commit " + pv.theirs_rev : "");
+  return [["Yours — on your disk now", pv.mine], [theirs, pv.theirs]];
+}
+
+$("tasks-web").onclick = () => api().open_web("mine").catch(e => fail(e));
+$("tasks-board").onclick = () => api().open_web("board").catch(e => fail(e));
+
 /* --- опитування: наступне лише після завершення попереднього ----------- */
 
 function loop() {
@@ -1798,6 +2617,11 @@ function loop() {
 window.addEventListener("pywebviewready", () => {
   refresh();
   loop();
+  // Задачі — власним, повільнішим кроком: вони змінюються рідко, а сервер
+  // однаково пам'ятає список 40 с. Поки йде передача — не смикаємо.
+  setInterval(() => {
+    if (tasksOn() && $("busy").classList.contains("hidden")) loadTasks(false);
+  }, 30000);
   // тихо, один раз: якщо нового немає — художник про це навіть не дізнається
   setTimeout(() => checkUpdate(true), 3000);
 });

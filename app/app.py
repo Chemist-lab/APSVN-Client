@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """APSVN — простий SVN-клієнт для художників (стиль Diversion).
 
-Запуск: APSVN.bat (без консолі) або python app.py.
+Запуск: APSVN.exe (без консолі) або python app/app.py.
 
 Рішення за результатами аудиту:
 * жодного трейсбека в обличчя художнику — усі помилки або перекладені
@@ -29,12 +29,14 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import threading
 import time
 import traceback
+import urllib.parse
 
 # залежності вендоряться в ./vendor — застосунок самодостатній, жодних
 # pip install у художників. Теку застосунку додаємо явно, бо запуск із
@@ -56,7 +58,7 @@ LOG = os.path.join(CONF_DIR, "error.log")
 RESCUE = os.path.join(CONF_DIR, "rescue")
 # Номер версії — єдине місце на весь проєкт. Збірка бере його звідси,
 # і оновлення порівнюватиме його з тим, що лежить на сервері.
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 KEYRING_SERVICE = "APSVN"
 FORMAT = 2
@@ -82,6 +84,7 @@ try:
     import explorer as ex
     import shellicon as si
     import updater as up
+    import server_api as srv
 except Exception:
     fatal("could not start",
           "Some parts of the application are missing. Most likely APSVN was "
@@ -113,6 +116,26 @@ def _bullets(items, cap=8):
     if len(items) > cap:
         shown.append("  … and %d more" % (len(items) - cap))
     return "\n".join(shown)
+
+
+def _thumb(full):
+    """Картинка локального файлу — за ВМІСТОМ, а не за іменем.
+
+    Копії, які svn лишає поруч при конфлікті, звуться «scene.blend.r12»: за
+    розширенням їх не впізнати, а розбір заголовка впізнає. Нічого не кидає.
+    """
+    if not full or not os.path.isfile(full):
+        return None
+    try:
+        import base64
+        import blendthumb
+        import imgthumb
+        got = blendthumb.blend_thumbnail(full)
+        if got:
+            return "data:image/png;base64," + base64.b64encode(got[2]).decode("ascii")
+        return imgthumb.preview_data_uri(full)
+    except Exception:
+        return None
 
 
 def project_id(url, wc):
@@ -216,6 +239,10 @@ class Api:
         self.busy = threading.Event()      # триває довга операція
         self._prog = None                  # поступ поточної передачі
         self._last = {}                    # кеш стану ПО ПРОЄКТАХ
+        self._srv = {}                     # що вміє сервер — по проєктах
+        self._tasks = {}                   # задачі — по проєктах
+        self._versions = {}                # версії файлу з ключами вмісту
+        self._img = srv.ImageCache()       # прев'ю з сервера
         sc.ensure_config(CONF_DIR)
 
     # --- проєкти ---
@@ -358,8 +385,7 @@ class Api:
         # теку з кодом усередині старого bundle. Заразом це робить правильним
         # і `open` у сценарії підміни: відкрити можна .app, а не теку.
         install = desktop.app_bundle(APP_DIR) or APP_DIR
-        relaunch = os.path.join(install, "APSVN.bat") if desktop.WINDOWS \
-            else install
+        relaunch = up.relaunch_target(staged, install)
         script = up.write_swap_script(work, staged, install, os.getpid(),
                                       relaunch)
         self._pending_update = script
@@ -392,6 +418,495 @@ class Api:
             return si.icons(exts)
         except Exception:
             return {}
+
+    # --- сервер студії: задачі, прев'ю, залежності ---------------------------
+    #
+    # Усе тут — ДОПОВНЕННЯ до svn, а не його частина. Тому:
+    # * жоден із цих викликів не бере self._lock — картинка не має чекати, поки
+    #   доїде коміт, а задача — поки скачається проєкт;
+    # * svn тут не кличеться, поки йде передача: svn поруч зі svn на тій самій
+    #   копії впирається в її замок, і _run кинувся б «лагодити» її посеред
+    #   чужої операції. Потрібне про копію береться з останнього state();
+    # * помилка сервера не стає помилкою програми. Немає сервера — немає
+    #   картинок і задач, а все інше працює, як працювало.
+
+    def _where(self, p=None):
+        """(де API, з якої теки сховища знято копію).
+
+        None — сервер цього проєкту не svn-native, і питати нема кого.
+        False — поки невідомо (копію ще не читали, а зараз іде передача).
+        """
+        p = p or self._proj()
+        if not p:
+            return None
+        info = (self._last.get(p["id"]) or {}).get("info")
+        if not info:
+            if self.busy.is_set() or not p.get("wc") or \
+                    not os.path.isdir(p["wc"]):
+                return False
+            try:
+                info = sc.info(p["wc"])
+            except sc.SvnError:
+                return False
+        root, url = info.get("root") or "", info.get("url") or ""
+        loc = srv.locate(root)
+        if loc is None:
+            return None
+        rel = urllib.parse.unquote(url[len(root):]).strip("/") \
+            if url.startswith(root) else ""
+        return loc, ("/" + rel) if rel else ""
+
+    def _client(self, p=None):
+        p = p or self._proj()
+        w = self._where(p)
+        if not w:
+            return None, ""
+        u, pw = self._creds(p)
+        return srv.Client(w[0], u, pw), w[1]
+
+    def server_status(self, force=False):
+        """Що вміє сервер поточного проєкту.
+
+        Відповідь пам'ятаємо: успіх — на 10 хвилин, невдачу — на хвилину, а
+        відмову в паролі — на п'ять. Питати щоразу нема сенсу, а після
+        невдачі тим паче: хибний пароль, повторений щодесять секунд, сервер
+        сприйме як підбір і зачинить вхід (429) — і вже для всього.
+        """
+        p = self._proj()
+        if not p:
+            return {"ok": False}
+        memo = self._srv.get(p["id"])
+        if memo and not force and time.time() < memo["until"]:
+            return memo["out"]
+        w = self._where(p)
+        if w is False:
+            return {"ok": False, "why": "later"}      # не пам'ятаємо — це мить
+        if w is None:
+            out, ttl = {"ok": False, "why": "none"}, 600
+        else:
+            u, pw = self._creds(p)
+            client = srv.Client(w[0], u, pw)
+            try:
+                h = client.hello()
+                eps = [str(e) for e in (h.get("endpoints") or [])]
+                out = {"ok": True, "me": h.get("user") or u,
+                       "admin": bool(h.get("admin")),
+                       # старий образ сервера вмів прев'ю, але не задачі
+                       "tasks": any(e.rstrip("/").endswith("/tasks") for e in eps),
+                       "repo": client.where.repo}
+                ttl = 600
+            except srv.ApiError as e:
+                out = {"ok": False, "why": "error", "error": str(e),
+                       "code": e.code}
+                ttl = 300 if e.code in (401, 429) else 60
+        self._srv[p["id"]] = {"out": out, "until": time.time() + ttl}
+        return out
+
+    def _task_view(self, t, prefix, me, wc):
+        """Задача з сервера -> те, що треба інтерфейсу, з шляхом у копії."""
+        local = srv.local_path(prefix, t.get("path"))
+        status = t.get("status") or ""
+        people = [str(x) for x in (t.get("assignees") or [])]
+        mine = bool(me) and me in people
+        full = (os.path.join(wc, local.replace("/", os.sep))
+                if (wc and local is not None) else None)
+        return {
+            "id": t.get("id"), "path": t.get("path"), "local": local,
+            "name": t.get("name") or (t.get("path") or "").rsplit("/", 1)[-1],
+            "type": t.get("type") or "", "status": status,
+            "status_name": t.get("status_name") or
+            srv.STATUS_NAMES.get(status, status),
+            "assignees": people, "mine": mine,
+            "due": t.get("due"), "overdue": bool(t.get("overdue")),
+            "updated": t.get("updated"), "gone": bool(t.get("gone")),
+            "is_dir": bool(full and os.path.isdir(full)),
+            "on_disk": bool(full and os.path.isfile(full)),
+            "binary": bool(local) and local.lower().endswith(sc.BINARY_EXT),
+            "openable": bool(local) and local.lower().endswith(ex.OPENABLE),
+            # лише ті кроки, які виконавцю дозволені; решта — справа керівника,
+            # і кнопка, що завжди відповідає 403, людину лише дратує
+            "moves": [to for to in ("wip", "wfa")
+                      if mine and (status, to) in srv.ARTIST_MOVES],
+        }
+
+    def tasks_overview(self, force=False):
+        """Незавершені задачі проєкту: мої — для вкладки, чужі — для позначок.
+
+        Чужі теж потрібні: «цей файл призначено olena» людина має бачити ДО
+        того, як спробує його зайняти, а не з відмови сервера.
+        """
+        p = self._proj()
+        if not p:
+            return {"ok": False, "tasks": []}
+        memo = self._tasks.get(p["id"])
+        if memo and not force and time.time() - memo["at"] < 40:
+            return memo["out"]
+        s = self.server_status()
+        if not s.get("ok") or not s.get("tasks"):
+            return {"ok": False, "tasks": [], "off": True,
+                    "error": s.get("error")}
+        client, prefix = self._client(p)
+        if client is None:
+            return {"ok": False, "tasks": [], "error": srv.OFFLINE}
+        try:
+            got = client.tasks(status=srv.ACTIVE)
+        except srv.ApiError as e:
+            # Останній відомий список лишається: позначки «призначено колезі»
+            # на хвилину застарілі кращі, ніж зниклі посеред роботи.
+            stale = dict((memo or {}).get("out") or {"tasks": []})
+            stale.update(ok=False, error=str(e))
+            return stale
+        me = s.get("me") or p.get("username")
+        tasks = [self._task_view(t, prefix, me, p.get("wc"))
+                 for t in got.get("tasks") or []]
+        out = {"ok": True, "me": me, "tasks": tasks}
+        self._tasks[p["id"]] = {"at": time.time(), "out": out}
+        return out
+
+    def _tasks_stale(self):
+        """Наступний tasks_overview() має спитати сервер — але список не губимо.
+
+        Не pop: якщо сервер зникне саме після зміни статусу, запасним лишиться
+        останній відомий список, і позначки «призначено колезі» не щезнуть
+        посеред роботи. Перевірено test_server.py саме таким обривом.
+        """
+        memo = self._tasks.get(self.c.get("id"))
+        if memo:
+            memo["at"] = 0
+
+    def tasks_done(self):
+        """Мої завершені задачі — лише на вимогу, списком не більше 50."""
+        s = self.server_status()
+        client, prefix = self._client()
+        if client is None or not s.get("ok"):
+            raise sc.SvnError(s.get("error") or srv.OFFLINE)
+        try:
+            got = client.tasks(mine=True, status=["done"])
+        except srv.ApiError as e:
+            raise sc.SvnError(str(e))
+        p = self._proj()
+        rows = [self._task_view(t, prefix, s.get("me"), p.get("wc"))
+                for t in got.get("tasks") or []]
+        return rows[:50]
+
+    def task_detail(self, task_id):
+        """Задача зі стрічкою подій і картинкою файлу."""
+        s = self.server_status()
+        client, prefix = self._client()
+        if client is None or not s.get("ok"):
+            raise sc.SvnError(s.get("error") or srv.OFFLINE)
+        try:
+            got = client.task(task_id)
+        except srv.ApiError as e:
+            raise sc.SvnError(str(e))
+        t = got.get("task") or {}
+        p = self._proj()
+        view = self._task_view(t, prefix, s.get("me"), p.get("wc"))
+        view["supervisor"] = bool(got.get("supervisor"))
+        view["created_by"] = t.get("created_by")
+        # новіші зверху — як у стрічці, яку людина гортає вниз у минуле
+        view["events"] = [{k: e.get(k) for k in ("at", "user", "kind", "old",
+                                                 "new", "comment", "rev")}
+                          for e in reversed(t.get("events") or [])][:200]
+        view["preview"] = None
+        if not view["is_dir"] and (t.get("path") or "").lower().endswith(
+                srv.PREVIEWABLE):
+            view["preview"] = self._preview(client, t["path"], None)
+        return view
+
+    def task_move(self, task_id, status, comment=""):
+        """Новий статус задачі. Правила перевіряє сервер; 403 — це правило."""
+        if status not in srv.STATUS_NAMES:
+            raise sc.SvnError("Unknown status")
+        client, _ = self._client()
+        if client is None:
+            raise sc.SvnError(srv.OFFLINE)
+        try:
+            got = client.set_status(task_id, status, (comment or "").strip())
+        except srv.ApiError as e:
+            # «Moving to Done is up to a supervisor.» — пояснення від сервера,
+            # і воно заслуговує вікна, а не тосту
+            raise (sc.RuleError(str(e)) if e.code == 403 else sc.SvnError(str(e)))
+        self._tasks_stale()
+        t = got.get("task") or {}
+        return "“%s” — %s now." % (t.get("name") or "The task",
+                                   t.get("status_name") or
+                                   srv.STATUS_NAMES[status])
+
+    def task_comment(self, task_id, text):
+        text = (text or "").strip()
+        if not text:
+            raise sc.SvnError("Write something first")
+        client, _ = self._client()
+        if client is None:
+            raise sc.SvnError(srv.OFFLINE)
+        try:
+            client.comment(task_id, text)
+        except srv.ApiError as e:
+            raise sc.SvnError(str(e))
+        return "Comment added"
+
+    def open_web(self, kind, path=None):
+        """Сторінка на сайті студії — збирається ТУТ, а не приходить ззовні.
+
+        Інтерфейс каже лише «що» (файл, мої задачі, дошка) і шлях у копії;
+        адресу складаємо самі з адреси проєкту. Так інтерфейс не може
+        попросити відкрити будь-що, і нічого чужого в браузер не потрапить.
+        """
+        w = self._where()
+        if not w:
+            raise sc.SvnError("This project’s server has no website.")
+        loc, prefix = w
+        repo = urllib.parse.quote(loc.repo, safe="")
+        if kind == "mine":
+            url = loc.web + "mine"
+        elif kind == "board":
+            url = loc.web + repo + "/tasks/"
+        elif kind in ("file", "repo"):
+            # file — шлях у копії; repo — шлях від кореня сховища (задача на
+            # гілці, якої в копії немає, теж має сторінку)
+            rp = (srv.repo_path(prefix, path or "") if kind == "file"
+                  else "/" + str(path or "").strip("/")).strip("/")
+            if ".." in rp.split("/"):
+                raise sc.SvnError("Unknown page")
+            url = loc.web + repo + "/tree/" + urllib.parse.quote(rp, safe="/")
+        else:
+            raise sc.SvnError("Unknown page")
+        if not desktop.open_path(url):
+            raise sc.SvnError("Could not open the browser")
+        return True
+
+    # --- картинки з сервера ---
+    def _preview(self, client, rpath, rev):
+        """data:URI картинки файлу на ревізії (None — остання), або None.
+
+        Готове пам'ятаємо: вміст на ревізії не змінюється ніколи. «Остання» —
+        змінюється, тож її ключ живе хвилину. Відсутність картинки не
+        запам'ятовуємо зовсім: «готується» за хвилину стане готовою.
+        """
+        stamp = rev if rev is not None else "head-%d" % (time.time() // 60)
+        key = ("p", client.where.api, client.where.repo, rpath, stamp)
+        if self._img.has(key):
+            return self._img.get(key)
+        got = client.preview(rpath, rev)
+        uri = srv.data_uri(*got) if got else None
+        if uri:
+            self._img.put(key, uri)
+        return uri
+
+    def _blob(self, client, key, link):
+        """Картинка за ключем вмісту — однакова для всіх версій з тим вмістом."""
+        ck = ("b", client.where.api, key)
+        if self._img.has(ck):
+            return self._img.get(ck)
+        got = client.blob(link)
+        uri = srv.data_uri(*got) if got else None
+        if uri:
+            self._img.put(ck, uri)
+        return uri
+
+    def previews(self, items):
+        """Картинки файлів із сервера: {"шлях@ревізія": data:URI або None}.
+
+        Для того, чого ще немає на диску, для файлів у коміті з історії, для
+        старих версій. Нічого не кидає: картинка — прикраса, і її відсутність
+        не варта повідомлення.
+        """
+        out = {}
+        if not self.server_status().get("ok"):
+            return out
+        client, prefix = self._client()
+        if client is None:
+            return out
+        want = []
+        for it in (items or [])[:80]:
+            path = str((it or {}).get("path") or "")
+            rev = it.get("rev")
+            try:
+                rev = int(rev) if rev not in (None, "") else None
+            except (TypeError, ValueError):
+                rev = None
+            if path.lower().endswith(srv.PREVIEWABLE):
+                want.append((path, rev))
+        got = srv.fetch_all(
+            lambda pr: self._preview(client, srv.repo_path(prefix, pr[0]), pr[1]),
+            want)
+        for (path, rev), uri in zip(want, got):
+            out["%s@%s" % (path, "" if rev is None else rev)] = uri
+        return out
+
+    def file_versions(self, path):
+        """Картинки версій файлу для «What happened to …» — за ревізіями.
+
+        Сервер сам іде крізь перейменування і дає ключ вмісту кожної версії;
+        однаковий вміст (тег, переїзд) — одна картинка, і качаємо її раз.
+        """
+        if not self.server_status().get("ok"):
+            return {"ok": False}
+        client, prefix = self._client()
+        if client is None:
+            return {"ok": False}
+        try:
+            got = client.versions(srv.repo_path(prefix, path), limit=40)
+        except srv.ApiError as e:
+            return {"ok": False, "error": str(e)}
+        vs = got.get("versions") or []
+        self._versions[(self.c.get("id"), path)] = {
+            v["key"]: v.get("rev") for v in reversed(vs) if v.get("key")}
+        links = {}
+        for v in vs:
+            pv = v.get("preview") or {}
+            if pv.get("state") == "ok" and pv.get("url") and v.get("key"):
+                links.setdefault(v["key"], pv["url"])
+        keys = list(links)[:24]
+        uris = srv.fetch_all(lambda k: self._blob(client, k, links[k]), keys)
+        by_key = dict(zip(keys, uris))
+        return {"ok": True, "versions": {
+            str(v.get("rev")): {"preview": by_key.get(v.get("key")),
+                                "state": (v.get("preview") or {}).get("state")}
+            for v in vs}}
+
+    def which_version(self, path):
+        """Яка з версій лежить у людини на диску — за SHA-1, нічого не качаючи.
+
+        Потрібно тоді, коли svn цього не скаже: файл змінено (скажімо, людина
+        щойно повернула стару версію і ще не здала), а вміст збігається з
+        однією з версій. Читає файл цілком, тож лише на вимогу.
+        """
+        known = self._versions.get((self.c.get("id"), path))
+        if not known:
+            return None
+        full = ex.inside(self._wc(), path)
+        if not os.path.isfile(full):
+            return None
+        try:
+            key = srv.content_key(full)
+        except OSError:
+            return None
+        return {"rev": known.get(key)}
+
+    def file_links(self, path):
+        """Що сцена тягне за собою і хто використовує файл — для провідника."""
+        if not self.server_status().get("ok"):
+            return {"ok": False}
+        client, prefix = self._client()
+        if client is None:
+            return {"ok": False}
+        rp = srv.repo_path(prefix, path)
+        low = path.lower()
+        out = {"ok": True}
+        if low.endswith(".blend"):
+            try:
+                out["deps"] = self._deps_view(client.deps(rp, recursive=True),
+                                              prefix)
+            except srv.ApiError as e:
+                out["deps"] = {"state": "error", "note": str(e)}
+        if low.endswith(srv.USABLE):
+            try:
+                got = client.usedby(rp)
+                users = [srv.local_path(prefix, u.get("source")) or u.get("source")
+                         for u in got.get("users") or []]
+                out["used_by"] = {"users": users[:60], "n": len(users),
+                                  "complete": bool(got.get("complete"))}
+            except srv.ApiError as e:
+                out["used_by"] = {"error": str(e)}
+        return out
+
+    def _deps_view(self, d, prefix):
+        """Відповідь deps (буває 180 КБ на одну сцену) -> коротке зведення.
+
+        Інтерфейсу не треба кожне запаковане зображення поіменно — йому треба
+        «скільки чого» і перелік того, що справді зламано. Плюс перетин із
+        тим, що зараз їде з сервера: «сцена тягне файли, які колега щойно
+        змінив» — рівно та порада, яку варто дати перед відкриттям.
+        """
+        state = d.get("state") or "error"
+        if state != "ok":
+            return {"state": state, "note": d.get("note") or ""}
+        links = d.get("links") or []
+        counts = {}
+        for l in links:
+            counts[l.get("state")] = counts.get(l.get("state"), 0) + 1
+        problems = []
+        for l in links:
+            if l.get("state") in srv.PROBLEMS and len(problems) < 40:
+                raw = l.get("raw") or ""
+                problems.append({
+                    "name": l.get("name") or raw.replace("\\", "/").rsplit("/", 1)[-1],
+                    "raw": raw, "state": l.get("state"), "kind": l.get("kind"),
+                    "target": srv.local_path(prefix, l["target"])
+                    if l.get("target") else None})
+        closure = d.get("closure") or {}
+        files = [x for x in (srv.local_path(prefix, f.get("path"))
+                             for f in closure.get("files") or []) if x]
+        pid = self.c.get("id")
+        incoming = {f["path"] for f in (self._last.get(pid) or {}).get("files", [])
+                    if f.get("remote_change")}
+        newer = [f for f in files if f in incoming]
+        return {"state": "ok", "blender": d.get("blender"), "total": len(links),
+                "counts": counts, "problems": problems, "uses": len(files),
+                "newer": newer[:20], "newer_n": len(newer),
+                "pending": len(closure.get("pending") or [])}
+
+    def used_by_many(self, paths):
+        """{файл: [сцени, що на нього посилаються]} — перед здачею видалення.
+
+        Сцени, які видаляються тим самим комітом, не рахуються: попереджати,
+        що зламається те, що теж зникає, — шум.
+        """
+        if not self.server_status().get("ok"):
+            return {}
+        client, prefix = self._client()
+        if client is None:
+            return {}
+        going = set(paths or [])
+        want = [p for p in (paths or []) if str(p).lower().endswith(srv.USABLE)][:40]
+
+        def one(p):
+            got = client.usedby(srv.repo_path(prefix, p))
+            users = [srv.local_path(prefix, u.get("source")) or u.get("source")
+                     for u in got.get("users") or []]
+            return [u for u in users if u not in going]
+
+        res = srv.fetch_all(one, want)
+        return {p: u for p, u in zip(want, res) if u}
+
+    def conflict_previews(self, path):
+        """Обидві сторони конфлікту картинками — щоб вибирати, бачачи.
+
+        Зі свого диска: svn лишає поруч копію того, що приїхало від колеги
+        (file.r12), а для тексту ще й file.mine. Сервер питаємо лише тоді,
+        коли копії колеги на диску немає — як у конфлікті «твій файл на місці
+        командного». Нічого не кидає: без картинок діалог лишається тим самим.
+        """
+        try:
+            full = ex.inside(self._wc(), path)
+        except sc.SvnError:
+            return {}
+        folder, name = os.path.split(full)
+        theirs, theirs_rev, mine = None, None, None
+        try:
+            for n in os.listdir(folder):
+                tail = n[len(name):] if n.startswith(name) else ""
+                if tail.startswith(".r") and tail[2:].isdigit():
+                    if theirs_rev is None or int(tail[2:]) > theirs_rev:
+                        theirs_rev, theirs = int(tail[2:]), os.path.join(folder, n)
+                elif tail == ".mine":
+                    mine = os.path.join(folder, n)
+        except OSError:
+            pass
+        out = {"mine": _thumb(mine or full), "theirs": _thumb(theirs),
+               "theirs_rev": theirs_rev}
+        if out["theirs"] is None and path.lower().endswith(srv.PREVIEWABLE) \
+                and self.server_status().get("ok"):
+            client, prefix = self._client()
+            if client is not None:
+                try:
+                    out["theirs"] = self._preview(
+                        client, srv.repo_path(prefix, path), theirs_rev)
+                except srv.ApiError:
+                    pass
+        return out
 
     def _rate(self, kind):
         """Швидкість, ЗАМІРЯНА на попередніх передачах, байтів за секунду.
@@ -518,6 +1033,8 @@ class Api:
             self.conf["current"] = (self.projects[0]["id"]
                                     if self.projects else None)
         self._last.pop(pid, None)
+        self._srv.pop(pid, None)
+        self._tasks.pop(pid, None)
         save_conf(self.conf, dropped={pid})
         if held:
             return ("Project removed from the list. WARNING: %d file(s) are "
@@ -535,6 +1052,10 @@ class Api:
 
     def _store_password(self, p, password):
         key = "proj:" + p["id"]
+        # Відповідь сервера пам'ятається хвилинами (див. server_status) — зі
+        # старим паролем вона була б «не пускає» ще довго після виправлення.
+        self._srv.pop(p["id"], None)
+        self._tasks.pop(p["id"], None)
         try:
             keyring.set_password(KEYRING_SERVICE, key, password or "")
             if keyring.get_password(KEYRING_SERVICE, key) != (password or ""):
@@ -621,7 +1142,13 @@ class Api:
         return self._guard(sc.update, self._wc(), username=u, password=p,
                            progress=self._tick, total=total)
 
-    def do_commit(self, paths, message, keep_locks=None):
+    def do_commit(self, paths, message, keep_locks=None, review=None):
+        """Здати вибране. review — id задач, які після здачі піти на перевірку.
+
+        Статус «в роботу» тут не ставиться НАВМИСНО: перший коміт виконавця
+        сервер переводить у роботу сам, за кілька секунд. Зробити це ще й тут —
+        значить подвоїти подію в стрічці задачі.
+        """
         wc, (u, p) = self._wc(), self._creds()
         message = (message or "").strip()
         if not message:
@@ -754,9 +1281,44 @@ class Api:
                             " %d files are no longer locked and are read-only "
                             "again — lock them before you keep editing."
                             % len(held))
+            done = sc.COMMIT_RE.search(out)
+            if review and done:
+                out += self._send_to_review(review, message, done.group(1))
             return out
 
         return self._guard(work)
+
+    def _send_to_review(self, ids, message, rev):
+        """Після здачі — задачі на перевірку. Ніколи не валить саму здачу.
+
+        Коміт уже на сервері; якщо статус не змінився (сервер недоступний,
+        правило не пустило), людина має про це дізнатися, але повідомлення
+        «здача не вдалася» було б неправдою.
+
+        Порядок з автостартом сервера байдужий: він переводить у роботу лише
+        з To do і Retake, тож задачу, яку ми вже віддали на перевірку, не
+        чіпає; а якщо встиг першим — з роботи на перевірку виконавцю можна.
+        """
+        client, _ = self._client()
+        if client is None:
+            return (" The task could not be sent to review — the server "
+                    "is not answering. Do it from the “My tasks” tab.")
+        moved, failed = [], []
+        for tid in ids or []:
+            try:
+                got = client.set_status(int(tid), "wfa",
+                                        "%s\n(commit %s)" % (message, rev))
+                moved.append((got.get("task") or {}).get("name") or "#%s" % tid)
+            except (srv.ApiError, ValueError, TypeError) as e:
+                failed.append(str(e))
+        self._tasks_stale()                        # показати новий статус одразу
+        msg = ""
+        if moved:
+            msg += " Sent to review: %s." % ", ".join("“%s”" % n for n in moved)
+        if failed:
+            msg += (" The task was not sent to review: %s"
+                    % "; ".join(sorted(set(failed))))
+        return msg
 
     def relocate(self, new_url):
         """Перевести проєкт на нову адресу сервера — лише за згодою людини."""
@@ -771,6 +1333,8 @@ class Api:
         p["url"] = new_url
         save_conf(self.conf)
         self._last.pop(p["id"], None)
+        self._srv.pop(p["id"], None)          # новий сервер — нове API
+        self._tasks.pop(p["id"], None)
         return out
 
     # --- провідник проєкту ---
@@ -805,7 +1369,7 @@ class Api:
                 "APSVN does not open files of this kind — use “Show in "
                 "folder” and open it yourself if you trust it.")
         if take_lock:
-            self._guard(sc.lock, wc, [path], username=u, password=p, me=u)
+            self._lock_explained(wc, [path], u, p)
         if not desktop.open_path(full):
             raise sc.SvnError("Could not open the file")
         return ("Locked and opened" if take_lock else "Opened")
@@ -825,8 +1389,48 @@ class Api:
 
     def do_lock(self, paths):
         u, p = self._creds()
-        return self._guard(sc.lock, self._wc(), paths, username=u, password=p,
-                           me=u)
+        return self._lock_explained(self._wc(), paths, u, p)
+
+    def _lock_explained(self, wc, paths, u, p):
+        """Лок — а якщо сервер відмовив без пояснень, пояснюємо задачами.
+
+        Хук м'якого локу пише, чий це файл, і svn доносить цей текст сам —
+        тоді приходить RuleError, і додати нічого. Але якщо текст загубився
+        дорогою (голе «403 Forbidden»), людина лишилася б із відмовою без
+        причини. Причину ми знаємо самі: задача на цьому файлі призначена
+        комусь іншому. Лише тоді, коли відмова справді схожа на правило —
+        інакше «призначено olena» підмінило б зовсім іншу біду.
+        """
+        try:
+            return self._guard(sc.lock, wc, paths, username=u, password=p,
+                               me=u)
+        except sc.RuleError:
+            raise
+        except sc.SvnError as e:
+            why = self._assigned_elsewhere(paths, "lock")
+            if why and re.search(r"\b403\b|Forbidden|hook", e.raw or "", re.I):
+                raise sc.RuleError(why, e.raw)
+            raise
+
+    def _assigned_elsewhere(self, paths, verb):
+        """Той самий текст, що пише хук м'якого локу, — з відомих нам задач."""
+        me = self.c.get("username")
+        tasks = ((self._tasks.get(self.c.get("id")) or {}).get("out")
+                 or {}).get("tasks") or []
+        lines = []
+        for path in paths:
+            for t in srv.covering(tasks, path):
+                if t["assignees"] and me not in t["assignees"] \
+                        and t["status"] != "done":
+                    lines.append("  %s — %s (%s, %s)" % (
+                        path, ", ".join(t["assignees"]), t["type"] or "task",
+                        t["status_name"]))
+                    break
+        if not lines:
+            return None
+        return ("These files are assigned to someone else:\n" + "\n".join(lines)
+                + "\nOnly the assignee or a supervisor can %s them. Ask a "
+                  "supervisor to reassign the task." % verb)
 
     def do_unlock(self, paths):
         u, p = self._creds()
@@ -856,6 +1460,10 @@ class Api:
                 who = sorted(set(v for v in r["others"].values() if v))
                 msg += (" %d could not be locked — held by %s."
                         % (len(r["others"]), ", ".join(who) or "somebody else"))
+            if r.get("refused"):
+                # Вікном, а не тостом: пояснення від сервера — на кілька
+                # рядків, і воно каже, до кого йти по решту файлів.
+                raise sc.RuleError(msg + "\n\n" + r["refused"])
             return msg
 
         return self._guard(work)
@@ -933,8 +1541,15 @@ class Api:
             rows = sc.file_log(wc, path, username=u, password=p)
             st = {f["path"]: f for f in sc.status(wc, me=u)}
             f = st.get(path, {})
+            # На якій ревізії стоїть сам файл у копії. Версія, яка в людини, —
+            # найновіша з історії, не новіша за неї: «ось ця — у тебе». Питаємо
+            # копію, а не сервер, тож це миттєво й без мережі.
+            try:
+                base = int(sc.file_info(wc, path)["rev"])
+            except (sc.SvnError, TypeError, ValueError, KeyError):
+                base = None
             return {
-                "path": path, "rows": rows,
+                "path": path, "rows": rows, "base": base,
                 # відкат поверх незданих змін знищив би їх безповоротно:
                 # у pristine лежить BASE, а цих байтів не було ніде
                 "dirty": f.get("status") in ("modified", "added", "replaced"),

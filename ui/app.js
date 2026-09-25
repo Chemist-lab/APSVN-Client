@@ -636,7 +636,7 @@ function renderFiles() {
     // перевикористаний вузол показував би вчорашній стан
     items.push(["f:" + f.path,
                 JSON.stringify([f, selected.has(f.path), openDirs.has(f.path),
-                                ICONS.get(extOf(f.path, f.dir)) ? 1 : 0,
+                                ICONS.get(extOf(f.path, f.dir || f.folder)) ? 1 : 0,
                                 taskSig(f.path)]),
                 () => fileRow(f)]);
     if (f.dir && openDirs.has(f.path)) childItems(items, f);
@@ -652,8 +652,8 @@ function renderFiles() {
   rest.forEach(put);
   reconcile(box, items);
   syncBar();
-  wantIcons(files.filter(f => !f.dir).map(f => f.path),
-            files.some(f => f.dir));
+  wantIcons(files.filter(f => !(f.dir || f.folder)).map(f => f.path),
+            files.some(f => f.dir || f.folder));
 }
 
 function fileRow(f) {
@@ -688,12 +688,13 @@ function fileRow(f) {
       p.title = "show what happened to this file";
       p.onclick = () => openHistory(f.path);
     }
-    row.append(cb, iconEl("fico", f.path, f.dir, f.dir ? "📁" : "📄"), p);
+    const folder = !!(f.dir || f.folder);
+    row.append(cb, iconEl("fico", f.path, folder, folder ? "📁" : "📄"), p);
 
     if (f.status_text) row.append(chip(f.status_text, f.status));
     if (f.moved_from && f.status !== "conflicted") {
-      const from = chip("from " + (parentOf(f.moved_from) || "the project root") + "/",
-                        "moved");
+      const was = parentOf(f.moved_from);
+      const from = chip("from " + (was ? was + "/" : "the project root"), "moved");
       from.title = "moved from " + f.moved_from + " — it goes to the server as a move, " +
                    "with its history";
       row.append(from);

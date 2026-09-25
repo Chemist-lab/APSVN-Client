@@ -386,7 +386,7 @@ part of the root, with the code in `Resources/app`.
 | `explorer.py`   | the Explorer: one folder at a time |
 | `blendthumb.py` | preview embedded in a `.blend` |
 | `imgthumb.py`   | previews for png/jpg/tga/exr |
-| `tests/`        | 679 checks without a server, up to 24 more (read-only) against the real one |
+| `tests/`        | 681 checks without a server, up to 24 more (read-only) against the real one |
 
 Settings live in `%APPDATA%\APSVN\config.json`, format 2:
 `{"format":2, "projects":[…], "current":"<id>", …mirror of the current one…}`.
@@ -713,6 +713,15 @@ behind decisions that look odd until you know why.
 * **Moving back is a true undo.** svn recognises a move back to where the
   file came from and the status becomes clean, as if nothing had happened;
   edits made after the move stay in the file. That is **↶ Move back**.
+* **A move needs the server to accept WebDAV `COPY` through its proxy.**
+  Submitting a move (or any copy) sends `COPY` with an `https://`
+  `Destination`; Apache behind a TLS-terminating proxy sees plain http and
+  mod_dav answers **502 Bad Gateway** (*Destination URI refers to different
+  scheme or port*) — every other request works, so only moves fail. That is
+  fixed on the server (rewrite `Destination` https→http before mod_dav), not
+  here; the offline tests use `file://` and cannot see it. APSVN says a
+  5xx in plain words — nothing was lost, the move is still waiting — and the
+  move can be submitted again once the server is fixed, or undone.
 * **“I moved it, a colleague changed it meanwhile” is its own conflict —
   and the usual button would have eaten their work.** The tree conflict lands
   on the old place. `--accept working` (our *keep my file* for tree
@@ -1024,7 +1033,7 @@ decision, not a gap.
 
 ### Tests
 
-Without a server — 679 checks against a temporary `file://` repository (and,
+Without a server — 681 checks against a temporary `file://` repository (and,
 for the studio server, a fake one on `127.0.0.1`); they leave nothing behind:
 
 ```bash

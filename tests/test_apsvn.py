@@ -156,6 +156,10 @@ except Exception as e:
 check("переклад E155004", "Repair" in sc.humanize("svn: E155004: sqlite busy"))
 check("переклад чужого лока", "Somebody else has this file locked" in sc.humanize("svn: E195022: File locked"))
 check("переклад логіна", "user name or password" in sc.humanize("svn: E170001: Authorization failed"))
+check("переклад 502 від проксі: нічого не пропало",
+      "Nothing was lost" in sc.humanize(
+          "svn: E175002: Unexpected HTTP status 502 'Bad Gateway' on "
+          "'/svn/r/!svn/rvr/8/Refs'"))
 
 # 12. scan_unprotected
 need = sc.scan_unprotected(wc)

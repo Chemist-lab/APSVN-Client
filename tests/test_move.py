@@ -172,6 +172,9 @@ check("здача сама взяла нову теку", sc.COMMIT_RE.search(ou
       out)
 msg = api.move_items(["Кадри/sh010"], "Архів")
 check("тека переїхала з вмістом", on_disk("Архів/sh010/a.blend"), msg)
+r = rows().get("Архів/sh010", {})
+check("перенесена тека в списку — тека (значок), але не «кинута» тека",
+      r.get("folder") is True and not r.get("dir"), r)
 out = api.do_commit(["Архів/sh010"], "тека")
 check("перенос теки здано", sc.COMMIT_RE.search(out) and repo_has("Архів/sh010/a.blend")
       and not repo_has("Кадри/sh010"), out)
@@ -331,9 +334,15 @@ if desktop.WINDOWS:
 
     # Кнопка миші зараз відпущена — саме той випадок, коли OLE «кинув» би
     # файл туди, де курсор. Запобіжник мусить не почати перетягування зовсім.
-    r = desktop._drag_on_ui(FakeForm(), full)
-    check("кнопку вже відпущено — перетягування не починається",
-          r == "cancelled" and not FakeForm.called, r)
+    # Кнопка тут справжня: якщо людина саме клацає, поки йде тест, запобіжник
+    # чесно пропускає — тоді перевірку пропускаємо й ми (як із буфером вище).
+    from System.Windows.Forms import Control, MouseButtons
+    if int(Control.MouseButtons) & int(MouseButtons.Left):
+        print("  (ліву кнопку миші зараз натиснуто — перевірку пропущено)")
+    else:
+        r = desktop._drag_on_ui(FakeForm(), full)
+        check("кнопку вже відпущено — перетягування не починається",
+              r == "cancelled" and not FakeForm.called, r)
 else:
     check("поза Windows нативного перетягування немає", not desktop.drag_supported(None))
 

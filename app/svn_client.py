@@ -239,6 +239,14 @@ _HUMAN = [
     (r"E170013|E731001|Unable to connect|Could not resolve",
      "No connection to the server. Check your internet and try again."),
     (r"E170011", "This project has moved to a new address."),
+    # 502/503/504 — відповідає не svn, а проксі перед ним: сервер
+    # перезапускається або налаштований не так (2026-09-25 так падав кожен
+    # перенос: Apache за TLS-проксі відкидав COPY на https-Destination).
+    # Художнику важливо одне: нічого не пропало, і це не його помилка.
+    (r"HTTP status 50[234]",
+     "The server did not answer properly. Nothing was lost — your changes "
+     "are still here. Try again in a minute; if it keeps happening, tell "
+     "your admin."),
     (r"E155000", "This folder already holds a different project."),
     # «не під версійним контролем» — окремо від «теку теж треба здати»:
     # порада тут інша, і сира англійська фраза сюди просочувалась
@@ -933,6 +941,11 @@ def status(wc, remote=False, username=None, password=None, me=None, meta=None):
     # Вивалювати тисячі рядків одразу не можна: у такому списку нічого не
     # знайти, а перемальовується він щоразу при опитуванні.
     for it in items:
+        # «folder» — лише для значка: перенесена чи додана тека інакше
+        # стояла б у списку з іконкою файлу. «dir» лишається за кинутими
+        # теками — від нього залежать розгортання й лічильник вмісту.
+        if os.path.isdir(os.path.join(wc, it["path"].replace("/", os.sep))):
+            it["folder"] = True
         if it["status"] == "unversioned" and                 os.path.isdir(os.path.join(wc, it["path"].replace("/", os.sep))):
             it["dir"] = True
             it.update(dir_summary(wc, it["path"]))

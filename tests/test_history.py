@@ -317,6 +317,31 @@ check("сміття замість ревізії не валить",
 check("None замість ревізії не валить",
       sc.revision_files(wc, None)["files"] == [])
 
+print()
+print("=" * 64)
+print("10. Пошук в історії: файл, ассет, опис, автор")
+print("=" * 64)
+import finder
+entries = sc.log_paths(wc)
+check("журнал зі шляхами: усі коміти, найновіші першими",
+      len(entries) >= 8 and int(entries[0]["rev"]) > int(entries[-1]["rev"]),
+      [e["rev"] for e in entries][:5])
+check("шляхи — від теки копії, без «/» спереду",
+      any("сцена.blend" in e["paths"] for e in entries), entries[:2])
+got = finder.commits("нотатки", entries)
+revs = [r["rev"] for r in got["rows"]]
+check("за іменем файлу — усі коміти, що його чіпали", revs == [r_mod, r_add], revs)
+check("видно, ЧОМУ коміт знайшовся", got["rows"][0]["hits"] == ["нотатки.txt"], got["rows"][0])
+check("за словом з опису", [r["rev"] for r in finder.commits("ДОПИСАВ", entries)["rows"]]
+      == [r_mod])
+check("за автором", finder.commits(ME, entries)["total"] == len(entries))
+check("кілька слів — кожне десь: опис + файл",
+      [r["rev"] for r in finder.commits("два сцена", entries)["rows"]] == [r_add])
+check("нічого — порожньо", finder.commits("немає-такого", entries)["total"] == 0)
+check("підтека копії зрізається як шлях, а не як рядок",
+      sc._from_wc("/trunk2/a.blend", "/trunk") == "trunk2/a.blend" and
+      sc._from_wc("/trunk/a.blend", "/trunk") == "a.blend")
+
 shutil.rmtree(base, ignore_errors=True)
 print()
 print("=" * 64)

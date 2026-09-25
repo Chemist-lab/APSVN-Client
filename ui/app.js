@@ -69,6 +69,31 @@ async function wantIcons(names, dirs) {
 
 const $ = id => document.getElementById(id);
 const api = () => window.pywebview.api;
+
+/* Пошук — одне правило в усіх вікнах: слова через пробіл, кожне має знайтися
+   хоч десь, регістр не важить. Так само шукає finder.py (провідник, історія). */
+function words(q) {
+  return String(q || "").toLowerCase().replace(/\\/g, "/").split(/\s+/).filter(Boolean);
+}
+function hitAll(ws, hay) {
+  const h = hay.map(x => String(x || "").toLowerCase());
+  return ws.every(w => h.some(x => x.includes(w)));
+}
+function setQ(id, v) {
+  const el = $(id);
+  el.value = v;
+  el.classList.toggle("on", !!v.trim());
+}
+// Esc у полі пошуку: спершу стерти пошук, другим — відпустити поле.
+function searchBox(id, clear) {
+  const el = $(id);
+  el.addEventListener("input", () => el.classList.toggle("on", !!el.value.trim()));
+  el.addEventListener("keydown", ev => {
+    if (ev.key !== "Escape") return;
+    ev.stopPropagation();
+    if (el.value) { setQ(id, ""); clear(); } else el.blur();
+  });
+}
 const clean = e => String(e && e.message ? e.message : e)
   .replace(/^[\w.]*Error:\s*/, "").trim();
 const pid = () => (st && st.pid) || "";
@@ -345,7 +370,10 @@ async function _refresh(mine) {
     THUMBS.clear();
     renderTaskBadge();
     resetExplorer();
-    taskQuery = ""; $("tasks-q").value = "";   // фільтр — свій у кожного проєкту
+    // пошук — свій у кожного проєкту
+    taskQuery = ""; setQ("tasks-q", "");
+    filesQuery = ""; filesShown = null; setQ("files-q", "");
+    logQuery = ""; setQ("log-q", ""); $("log-count").textContent = "";
     if (s.configured) initServer();
   }
 
@@ -600,17 +628,29 @@ function blockedMove(f, files) {
     x => x.path === f.moved_from && x.status === "conflicted"));
 }
 
+/* Пошук у змінах — просто фільтр списку. «Виділити все» з пошуком бере лише
+   видиме, а вибране, яке пошук сховав, лічильник називає окремо: здача
+   відправляє все вибране, і сховане не має їхати непомітно. */
+let filesQuery = "";
+let filesShown = null;              // шляхи, які видно з пошуком; null — пошуку немає
+$("files-q").oninput = () => { filesQuery = $("files-q").value; renderFiles(); };
+searchBox("files-q", () => { filesQuery = ""; renderFiles(); });
+
 function renderFiles() {
   const box = $("files");
   const all = (st && st.files) || [];
   const files = all.filter(f => !hiddenHalf(f));
+  const ws = words(filesQuery);
+  const shown = ws.length ? files.filter(f => hitAll(ws, [f.path, f.moved_from])) : files;
+  filesShown = ws.length ? shown.map(f => f.path) : null;
 
   // прибираємо з вибору те, чого вже немає або що не можна здавати
   const live = new Set(files
     .filter(f => f.status !== "conflicted" && !(f.lock_owner && !f.lock_mine)
                  && !blockedMove(f, all))
     .map(f => f.path));
-  liveSet = live;                       // «виділити все» працює по верхньому рівню
+  // «виділити все» працює по верхньому рівню — і лише по тому, що видно
+  liveSet = filesShown ? new Set([...live].filter(p => filesShown.includes(p))) : live;
   // Файли всередині кинутих тек у liveSet не входять (інакше лічильник рахував
   // би тисячі), але вибір із них треба зберігати — інакше позначене зникало б
   // при кожному опитуванні.
@@ -621,11 +661,12 @@ function renderFiles() {
   }
   for (const p of Array.from(selected)) if (!keep.has(p)) selected.delete(p);
 
-  $("empty").textContent = "No local changes in “" + (st.name || "") +
-    "” 🎉";
-  $("empty").classList.toggle("hidden", files.length !== 0);
+  $("empty").textContent = files.length
+    ? "Nothing here matches “" + filesQuery.trim() + "”"
+    : "No local changes in “" + (st.name || "") + "” 🎉";
+  $("empty").classList.toggle("hidden", shown.length !== 0);
 
-  const { out, rest } = bucket(files);
+  const { out, rest } = bucket(shown);
   // Згорнута група не має ховати конфлікт: людина згортає її вранці, а по
   // обіді конфлікт приїжджає й лишається невидимим до першої відмови здачі.
   if ((out.attention || []).some(f => f.status === "conflicted"))
@@ -652,8 +693,8 @@ function renderFiles() {
   rest.forEach(put);
   reconcile(box, items);
   syncBar();
-  wantIcons(files.filter(f => !(f.dir || f.folder)).map(f => f.path),
-            files.some(f => f.dir || f.folder));
+  wantIcons(shown.filter(f => !(f.dir || f.folder)).map(f => f.path),
+            shown.some(f => f.dir || f.folder));
 }
 
 function fileRow(f) {
@@ -926,9 +967,12 @@ function syncBar() {
   // ручного вибору виглядав би як «зняти все»
   cb.indeterminate = !allTop && n > 0;
   $("sel-all-t").textContent = allTop ? "Deselect all" : "Select all";
+  const unseen = filesShown ? [...selected].filter(
+    p => !filesShown.some(s => p === s || p.startsWith(s + "/"))).length : 0;
   $("sel-count").textContent = m
-    ? (n ? n + " selected" : "nothing selected")
-    : "nothing here can be submitted";
+    ? (n ? n + " selected" + (unseen ? " · " + unseen + " not shown by the search" : "")
+         : "nothing selected")
+    : filesShown ? "none of these can be submitted" : "nothing here can be submitted";
 
   // «і відправити на перевірку» — лише коли серед вибраного справді є файл
   // твоєї задачі, яку ще можна туди відправити. Інакше галочки немає зовсім:
@@ -943,6 +987,7 @@ function syncBar() {
 
 $("sel-all").onchange = () => {
   if ($("sel-all").checked) for (const p of liveSet) selected.add(p);
+  else if (filesShown) for (const p of liveSet) selected.delete(p);   // лише видиме
   else selected.clear();
   renderFiles();
 };
@@ -1133,6 +1178,7 @@ const treeOpen = new Set([""]);
 let treeKids = {};
 
 function resetExplorer() {
+  brQuery = ""; setQ("br-q", "");
   brPath = ""; brSel = null; brDir = null; brPainted = null; brSelSig = null;
   brCache.clear(); brBack.length = 0; brFwd.length = 0;
   brPick.clear(); brAnchor = null;
@@ -1145,6 +1191,8 @@ const baseOf = p => p.slice(p.lastIndexOf("/") + 1);
 
 async function openDir(path, how) {
   how = how || {};
+  // будь-який перехід (тека, крихти, дерево, назад) — це вихід із пошуку
+  if (brQuery) { brQuery = ""; setQ("br-q", ""); }
   const mine = ++brNav;
   const moving = path !== brPath || !brDir;
   if (moving && brDir && !how.history) {
@@ -1181,8 +1229,65 @@ async function openDir(path, how) {
 }
 
 // Оновити поточну теку на місці: після синхронізації, дії, приїзду іконок.
+// Посеред пошуку — оновити знайдене, а не викинути людину з нього.
 function refreshDir() {
-  if (view === "browse" && brDir) return openDir(brPath, { history: true });
+  if (view !== "browse") return;
+  if (brQuery) return findInProject(brQuery, true);
+  if (brDir) return openDir(brPath, { history: true });
+}
+
+/* Пошук по всьому проєкту (finder.py): на місці вмісту теки — знайдене, з
+   тим самим рядком, вибором, панеллю, перетягуванням і меню, що й у теці.
+   brDir тоді — «тека знайденого» без батька; будь-який перехід її знімає. */
+let brQuery = "";                 // що шукають; "" — звичайна тека
+let brFindTimer = null;
+$("br-q").oninput = () => {
+  clearTimeout(brFindTimer);
+  brFindTimer = setTimeout(() => findInProject($("br-q").value), 220);
+};
+searchBox("br-q", () => { clearTimeout(brFindTimer); findInProject(""); });
+$("br-q").addEventListener("keydown", ev => {
+  if (ev.key !== "Enter") return;
+  clearTimeout(brFindTimer);
+  findInProject($("br-q").value);
+});
+
+async function findInProject(q, quiet) {
+  const query = String(q || "").trim();
+  if (!query) {
+    if (!brQuery) return;
+    brQuery = "";
+    const c = brCache.get(brPath);
+    if (c) paintDir(c);                      // одразу назад, до теки, з пам'яті
+    return openDir(brPath, { history: true });
+  }
+  brQuery = query;
+  const mine = ++brNav;
+  if (!quiet) $("br-list").classList.add("loading");
+  let d;
+  try { d = await api().search_files(query); }
+  catch (e) {
+    if (mine === brNav) $("br-list").classList.remove("loading");
+    return fail(e);
+  }
+  if (mine !== brNav || brQuery !== query) return;
+  $("br-list").classList.remove("loading");
+  paintFound(d, query);
+}
+
+function paintFound(d, query) {
+  brDir = { path: brPath, parent: null, entries: d.entries, truncated: false,
+            found: query };
+  const n = d.total || 0;
+  $("br-count").textContent = !n ? "nothing found"
+    : (n === 1 ? "1 found" : n + " found") +
+      (n > d.entries.length ? " — showing the first " + d.entries.length : "") +
+      (d.partial ? " (the project is too big to search all of it)" : "");
+  renderDir(brDir);
+  syncNav();
+  if (brPainted !== "?" + query) $("br-list").scrollTop = 0;
+  brPainted = "?" + query;
+  keepPick();
 }
 
 function paintDir(d) {
@@ -1200,8 +1305,12 @@ function paintDir(d) {
   syncNav();
   if (brPainted !== d.path) $("br-list").scrollTop = 0;   // нова тека — з початку
   brPainted = d.path;
-  // Вибране могло змінитися (лок узяли, файл зник). Бічну панель
-  // перемальовуємо лише тоді — не щоразу, інакше вона блимала б щоопитування.
+  keepPick();
+}
+
+// Вибране могло змінитися (лок узяли, файл зник). Бічну панель
+// перемальовуємо лише тоді — не щоразу, інакше вона блимала б щоопитування.
+function keepPick() {
   for (const p of [...brPick]) if (!brEntry(p)) brPick.delete(p);
   if (brSel && !brEntry(brSel)) brSel = [...brPick].pop() || null;
   if (brPick.size > 1) renderMulti();
@@ -1353,9 +1462,11 @@ function renderDir(d) {
   const items = [];
   if (d.parent !== null) items.push(["up", "up:" + d.parent, () => upRow(d.parent)]);
   if (!d.entries.length) {
-    items.push(["empty", "empty", () => {
+    items.push(["empty", "empty:" + (d.found || ""), () => {
       const e = document.createElement("div");
-      e.className = "empty"; e.textContent = "This folder is empty";
+      e.className = "empty";
+      e.textContent = d.found ? "Nothing called “" + d.found + "” in this project"
+                              : "This folder is empty";
       return e;
     }]);
   }
@@ -1409,6 +1520,12 @@ function entryRow(it) {
 
   const nm = document.createElement("div");
   nm.className = "nm"; nm.textContent = it.name; nm.title = it.path;
+  if (it.where !== undefined) {              // знайдене пошуком: де воно лежить
+    const w = document.createElement("span");
+    w.className = "where";
+    w.textContent = it.where ? "in " + it.where : "in the project root";
+    nm.append(w);
+  }
   if (isDir && plain) {
     nm.onclick = ev => {
       if (!ev.ctrlKey && !ev.shiftKey && !ev.metaKey) openDir(it.path);
@@ -2638,17 +2755,69 @@ function ago(str) {
 
 // keep — оновити на місці (після «Get latest»): без «Reading history…», з тією
 // самою прокруткою і тим самим вибраним комітом, якщо він є й далі.
+/* Пошук в історії (finder.commits): коміти, у яких слова є в описі, в імені
+   автора або в шляхах змінених файлів — ассет, шот, файл. Журнал зі шляхами
+   бекенд тягне раз і пам'ятає, тож кожна літера не ходить на сервер. */
+let logQuery = "", logFindTimer = null, logFindNo = 0;
+$("log-q").oninput = () => {
+  clearTimeout(logFindTimer);
+  logFindTimer = setTimeout(() => findInLog($("log-q").value), 350);
+};
+searchBox("log-q", () => { clearTimeout(logFindTimer); findInLog(""); });
+$("log-q").addEventListener("keydown", ev => {
+  if (ev.key !== "Enter") return;
+  clearTimeout(logFindTimer);
+  findInLog($("log-q").value);
+});
+
+async function findInLog(q, quiet) {
+  const query = String(q || "").trim();
+  const mine = ++logFindNo;
+  if (!query) {
+    const was = logQuery;
+    logQuery = "";
+    $("log-count").textContent = "";
+    if (was) return loadLog();
+    return;
+  }
+  logQuery = query;
+  const box = $("log");
+  if (!quiet) box.innerHTML = "<div class='empty'>Searching the history…</div>";
+  let d;
+  try { d = await api().search_log(query); }
+  catch (e) {
+    if (mine !== logFindNo) return;
+    box.innerHTML = "<div class='empty'>Could not search the history</div>";
+    return fail(e);
+  }
+  if (mine !== logFindNo) return;
+  const n = d.total || 0;
+  $("log-count").textContent = (n === 1 ? "1 commit" : n + " commits") +
+    (d.more ? " · searched the last " + d.searched : "");
+  paintLog(d.rows, query, quiet);
+}
+
 async function loadLog(keep) {
+  if (logQuery) return findInLog(logQuery, keep);
   const box = $("log");
   const quiet = keep && logRows.length > 0;
   if (!quiet) box.innerHTML = "<div class='empty'>Reading history…</div>";
   let rows;
   try { rows = await api().get_log(); } catch (e) { rows = []; }
+  if (logQuery) return;                 // поки читали, людина почала шукати
+  paintLog(rows, null, quiet);
+}
+
+function paintLog(rows, found, quiet) {
+  const box = $("log");
   logRows = rows;
   if (!logRows.length) {
-    box.innerHTML = "<div class='empty'>No history yet</div>";
-    $("hist-side").innerHTML =
-      "<div class='br-empty'>Nothing has been submitted yet</div>";
+    box.innerHTML = "<div class='empty'></div>";
+    box.firstChild.textContent = found ? "No commit mentions “" + found + "”"
+                                       : "No history yet";
+    $("hist-side").innerHTML = found
+      ? "<div class='br-empty'>Nothing found</div>"
+      : "<div class='br-empty'>Nothing has been submitted yet</div>";
     return;
   }
   const top = box.scrollTop;
@@ -2665,11 +2834,20 @@ async function loadLog(keep) {
     meta.textContent = e.author + " · " + ago(e.date);
     meta.title = e.date;
     d.append(m, meta);
+    if (e.hits && e.hits.length) {
+      // чому коміт знайшовся: самий опис («правки») цього не скаже
+      const h = document.createElement("div");
+      h.className = "hits";
+      h.textContent = "📄 " + e.hits.join(", ") +
+        (e.nhits > e.hits.length ? " +" + (e.nhits - e.hits.length) + " more" : "");
+      h.title = e.hits.join("\n");
+      d.append(h);
+    }
     d.onclick = () => pickCommit(e.rev);
     box.append(d);
   }
   if (quiet) box.scrollTop = top;
-  const again = quiet && logRows.some(r => String(r.rev) === String(logRev));
+  const again = (quiet || found) && logRows.some(r => String(r.rev) === String(logRev));
   pickCommit(again ? logRev : logRows[0].rev);   // щось має бути показано одразу
 }
 
@@ -3096,14 +3274,25 @@ const groupOf = t => t.waiting ? "next" : KNOWN_GROUPS.has(t.status) ? t.status 
 let taskQuery = "";
 
 $("tasks-q").oninput = () => { taskQuery = $("tasks-q").value; renderTaskList(); };
+searchBox("tasks-q", () => { taskQuery = ""; renderTaskList(); });
 
 function taskHit(t) {
-  const q = taskQuery.trim().toLowerCase();
-  if (!q) return true;
-  return [t.name, t.type, t.local || t.path, t.status_name, t.sequence]
-    .concat(t.assignees || [])
-    .some(x => String(x || "").toLowerCase().includes(q));
+  const ws = words(taskQuery);
+  return !ws.length || hitAll(ws, [t.name, t.type, t.local || t.path, t.status_name,
+                                   t.sequence].concat(t.assignees || []));
 }
+
+// Ctrl+F — до поля пошуку того вікна, яке відкрите.
+document.addEventListener("keydown", ev => {
+  if (!(ev.ctrlKey || ev.metaKey) || ev.altKey || ev.key.toLowerCase() !== "f") return;
+  if (!$("modal").classList.contains("hidden")) return;
+  const id = { files: "files-q", browse: "br-q", log: "log-q", tasks: "tasks-q" }[view];
+  const el = id && $(id);
+  if (!el || el.offsetParent === null) return;       // поле сховане (змін немає)
+  ev.preventDefault();
+  el.focus();
+  el.select();
+});
 
 function taskOrder(a, b) {
   if (a.overdue !== b.overdue) return a.overdue ? -1 : 1;

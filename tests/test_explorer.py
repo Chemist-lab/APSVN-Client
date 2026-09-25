@@ -377,6 +377,63 @@ try:
 except sc.SvnError as e:
     check("зникла тека -> зрозуміла відмова", "no longer there" in str(e), e)
 
+print()
+print("=" * 64)
+print("12. Пошук по всьому проєкту (ассет, шот, файл)")
+print("=" * 64)
+os.makedirs(os.path.join(wc, "Assets", "Character", "new_w", "tex"), exist_ok=True)
+os.makedirs(os.path.join(wc, "Assets", "Character", "Олена"), exist_ok=True)
+for rel in ("Assets/Character/new_w/new_w.blend",
+            "Assets/Character/new_w/tex/skin.png",
+            "Assets/Character/Олена/Олена_риг.blend"):
+    with open(os.path.join(wc, rel.replace("/", os.sep)), "wb") as fh:
+        fh.write(b"x" * 10)
+api._index.clear()
+r = api.search_files("new_w")
+found = [e["path"] for e in r["entries"]]
+check("ассет: тека й файл з таким іменем",
+      found == ["Assets/Character/new_w", "Assets/Character/new_w/new_w.blend"], found)
+check("…а не кожен файл у теці ассета (skin.png)", "Assets/Character/new_w/tex/skin.png"
+      not in found, found)
+r = api.search_files("new_w png")
+check("кілька слів: картинки саме цього ассета",
+      [e["path"] for e in r["entries"]] == ["Assets/Character/new_w/tex/skin.png"],
+      [e["path"] for e in r["entries"]])
+r = api.search_files("олена")
+check("кирилиця без регістру", [e["path"] for e in r["entries"]] ==
+      ["Assets/Character/Олена", "Assets/Character/Олена/Олена_риг.blend"],
+      [e["path"] for e in r["entries"]])
+e0 = api.search_files("сцена міста")["entries"][0]
+check("знайдене — рядок провідника: де лежить, стан, чи можна відкрити",
+      e0["where"] == "Кадри" and e0["kind"] == "file" and e0["openable"] and
+      e0["on_disk"] and e0["status"] == "normal", e0)
+check("мотлох не знаходиться", api.search_files("blend1")["total"] == 0)
+check("порожній пошук — нічого", api.search_files("   ")["entries"] == [])
+check("…і не шукає «.svn»", api.search_files("wc.db")["total"] == 0)
+# стан у svn — з останньої синхронізації, як у провіднику
+api._last[api.c["id"]] = {"files": [
+    {"path": "Кадри/нотатки.txt", "status": "modified", "lock_owner": "olena",
+     "lock_mine": False, "remote_change": False},
+    {"path": "Кадри/нова.blend", "status": "none", "remote_change": True},
+    {"path": "Assets", "status": "unversioned"}]}
+by = {e["path"]: e for e in api.search_files("нотатки")["entries"]}
+check("змінене й чужий лок — видно в знайденому",
+      by["Кадри/нотатки.txt"]["status"] == "modified" and
+      by["Кадри/нотатки.txt"]["lock_owner"] == "olena", by)
+got = api.search_files("нова")["entries"]
+check("є на сервері, але ще не завантажене — теж знаходиться",
+      [(e["path"], e["on_disk"], e["status_text"]) for e in got] ==
+      [("Кадри/нова.blend", False, "not downloaded yet")], got)
+check("у кинутій теці все нове",
+      api.search_files("skin")["entries"][0]["status"] == "unversioned")
+# обхід диска пам'ятається — але довга дія його скидає
+os.makedirs(os.path.join(wc, "Пізніше"), exist_ok=True)
+check("обхід пам'ятається (нова тека ще не видна)",
+      api.search_files("пізніше")["total"] == 0)
+api._guard(lambda: None)
+check("після довгої дії обходимо знову", api.search_files("пізніше")["total"] == 1)
+api._last.pop(api.c["id"], None)
+
 shutil.rmtree(base, ignore_errors=True)
 print()
 print("=" * 64)

@@ -92,6 +92,8 @@
     <section id="tab-files">
       <div id="selbar" class="selbar hidden">
         <label><input type="checkbox" id="sel-all"> <span id="sel-all-t">Select all</span></label>
+        <input id="files-q" class="q" placeholder="search: file, asset, folder" spellcheck="false"
+               title="words separated by spaces; each has to be somewhere in the path (Ctrl+F)">
         <span class="spacer"></span>
         <span id="sel-count" class="dim"></span>
       </div>
@@ -115,6 +117,8 @@
         <button id="br-up" class="navbtn" title="one folder up (Backspace)" disabled>▲</button>
         <span id="crumbs"></span>
         <span class="spacer"></span>
+        <input id="br-q" class="q" placeholder="search the whole project" spellcheck="false"
+               title="a file or folder anywhere in the project — an asset, a shot, a file name (Ctrl+F)">
         <span id="br-count" class="dim"></span></div>
       <div class="br-split">
         <aside id="br-tree" class="br-tree"></aside>
@@ -130,7 +134,15 @@
          навмисно — див. revision_files() у svn_client.py. -->
     <section id="tab-history" class="hidden">
       <div class="br-split">
-        <div id="log"></div>
+        <div class="log-left">
+          <div class="crumbs">
+            <input id="log-q" class="q" placeholder="search: file, asset, note, person" spellcheck="false"
+                   title="commits whose note, author or changed files have these words (Ctrl+F)">
+            <span class="spacer"></span>
+            <span id="log-count" class="dim"></span>
+          </div>
+          <div id="log"></div>
+        </div>
         <div class="hist-right">
           <aside id="hist-side" class="hist-side">
             <div class="br-empty">Pick a commit on the left to see what changed in it</div>
@@ -156,7 +168,8 @@
             <!-- Задачі — лише свої. Сам проєкт (усе дерево й файли) відкритий
                  кожному, хто в ньому, — це вкладка Explorer; дошка всіх задач
                  — на сайті студії (Project board). -->
-            <input id="tasks-q" class="tasks-q" placeholder="filter: name, type, folder" spellcheck="false">
+            <input id="tasks-q" class="q" placeholder="search: name, type, folder" spellcheck="false"
+                   title="words separated by spaces (Ctrl+F)">
             <span class="spacer"></span>
             <button id="tasks-web" class="mini" title="every task of yours, in all projects, on the studio website">🌐 All my tasks</button>
             <button id="tasks-board" class="mini" title="the whole project's board on the studio website">Project board</button>

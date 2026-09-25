@@ -30,6 +30,7 @@ import tempfile
 import threading
 import time
 import urllib.parse
+import urllib.parse
 import xml.etree.ElementTree as ET
 
 import desktop
@@ -1543,6 +1544,57 @@ CHANGE_WORD = {"A": "added", "M": "changed", "D": "deleted", "R": "replaced"}
 REV_FILES_CAP = 500
 
 
+def _wc_prefix(wc):
+    """Де в сховищі лежить тека копії ("/trunk"; "" — у корені).
+
+    Шляхи журналу приходять від кореня СХОВИЩА, а людина бачить свою теку:
+    якщо копію знято з підтеки, різницю треба відрізати, інакше кожен рядок
+    починався б із чужого префікса. URL у svn info закодований (%D0%9F…), а
+    шляхи журналу — ні, тож декодуємо: інакше кирилична підтека не зрізалась
+    би ніколи.
+    """
+    try:
+        nfo = info(wc)
+    except SvnError:
+        return ""
+    u, r = (nfo.get("url") or ""), (nfo.get("root") or "")
+    return urllib.parse.unquote(u[len(r):]).rstrip("/") if u.startswith(r) else ""
+
+
+def _from_wc(path, prefix):
+    """Шлях журналу -> шлях від теки копії (саме «/trunk», а не «/trunk2»)."""
+    if prefix and (path == prefix or path.startswith(prefix + "/")):
+        path = path[len(prefix):]
+    return path.lstrip("/")
+
+
+LOG_SEARCH_DEPTH = 2000
+
+
+def log_paths(wc, limit=LOG_SEARCH_DEPTH, username=None, password=None):
+    """Журнал разом зі шляхами змінених файлів — для пошуку в історії.
+
+    Один `log -v` на останні limit комітів; далі пошук іде по пам'яті
+    (app.search_log), і кожна літера в полі пошуку не питає сервер знову.
+    Помилка — SvnError: пошук, на відміну від звичайного списку, має сказати,
+    що не вийшло, а не показати «нічого не знайдено».
+    """
+    root = _xml(["log", ".", "-v", "-l", str(int(limit)), "-r", "HEAD:1"],
+                cwd=wc, username=username, password=password, timeout=300)
+    prefix = _wc_prefix(wc)
+    out = []
+    for e in root.findall("logentry"):
+        paths = []
+        for pe in e.findall("paths/path"):
+            path = _from_wc(pe.text or "", prefix)
+            if path and not JUNK_RE.search(os.path.basename(path)):
+                paths.append(path)
+        out.append({"rev": e.get("revision"), "author": e.findtext("author") or "?",
+                    "date": _local_time(e.findtext("date")),
+                    "msg": (e.findtext("msg") or "").strip(), "paths": paths})
+    return out
+
+
 def revision_files(wc, rev, username=None, password=None, cap=REV_FILES_CAP):
     """Що змінилося в одному коміті.
 
@@ -1564,28 +1616,14 @@ def revision_files(wc, rev, username=None, password=None, cap=REV_FILES_CAP):
     except (SvnError, TypeError, ValueError):
         return {"files": [], "total": 0, "truncated": False}
 
-    # Шляхи приходять від кореня СХОВИЩА, а людина бачить свою теку. Якщо копію
-    # знято з підтеки, різницю треба відрізати, інакше кожен рядок починався б
-    # з чужого префікса.
-    prefix = ""
-    try:
-        nfo = info(wc)
-        u, r = (nfo.get("url") or ""), (nfo.get("root") or "")
-        if u.startswith(r):
-            prefix = u[len(r):]
-    except SvnError:
-        pass
-
+    prefix = _wc_prefix(wc)
     out, total = [], 0
     for e in root.findall("logentry"):
         for pe in e.findall("paths/path"):
             total += 1
             if len(out) >= cap:
                 continue
-            path = (pe.text or "")
-            if prefix and path.startswith(prefix):
-                path = path[len(prefix):]
-            path = path.lstrip("/")
+            path = _from_wc(pe.text or "", prefix)
             if not path or JUNK_RE.search(os.path.basename(path)):
                 total -= 1
                 continue

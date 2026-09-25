@@ -82,6 +82,7 @@ try:
     import webview
     import svn_client as sc
     import explorer as ex
+    import finder
     import shellicon as si
     import updater as up
     import server_api as srv
@@ -285,6 +286,8 @@ class Api:
         self._srv = {}                     # що вміє сервер — по проєктах
         self._tasks = {}                   # задачі — по проєктах
         self._kitsu = {}                   # адреси в Kitsu — по проєктах
+        self._index = {}                   # пошук: обхід диска — по проєктах
+        self._logv = {}                    # пошук: журнал зі шляхами — по проєктах
         self._versions = {}                # версії файлу з ключами вмісту
         self._img = srv.ImageCache()       # прев'ю з сервера
         self._memo = {}                    # (проєкт, що) -> (коли, відповідь)
@@ -368,6 +371,10 @@ class Api:
             return fn(*a, **kw)
         finally:
             self._prog = None
+            # Довга дія (оновлення, здача, перенос) могла змінити і файли на
+            # диску, і журнал: пам'ять пошуку після неї застаріла.
+            self._index.clear()
+            self._logv.clear()
             self.busy.clear()
             self._lock.release()
 
@@ -1625,6 +1632,50 @@ class Api:
         known = (self._last.get(self.c.get("id")) or {}).get("files")
         return ex.browse(wc, path, known=known if known is not None else [],
                          local=not self.busy.is_set())
+
+    INDEX_TTL = 15          # с: скільки пам'ятати обхід диска для пошуку
+    LOG_TTL = 120           # с: скільки пам'ятати журнал зі шляхами
+
+    def search_files(self, query):
+        """Пошук по всьому проєкту — для провідника (див. finder). Без мережі.
+
+        Обхід диска пам'ятаємо INDEX_TTL секунд: інакше кожна літера в полі
+        пошуку обходила б увесь проєкт заново. Довга дія пам'ять скидає
+        (_guard). Що з файлом у svn — з останньої синхронізації, як у browse().
+        """
+        wc = self._wc()
+        if not finder.words(query):
+            return {"entries": [], "total": 0, "partial": False}
+        pid = self.c.get("id")
+        got = self._index.get(pid)
+        if not got or got["wc"] != wc or time.time() - got["at"] > self.INDEX_TTL:
+            idx, cut = finder.index(wc)
+            got = self._index[pid] = {"at": time.time(), "wc": wc, "idx": idx,
+                                      "cut": cut}
+        known = (self._last.get(pid) or {}).get("files") or []
+        out = finder.files(query, got["idx"], known)
+        out["partial"] = got["cut"]
+        return out
+
+    def search_log(self, query):
+        """Коміти зі словами пошуку — в описі, в авторі чи в шляхах файлів.
+
+        Журнал зі шляхами (останні sc.LOG_SEARCH_DEPTH комітів) тягнемо з
+        сервера ОДИН раз і пам'ятаємо LOG_TTL секунд — або до першої довгої
+        дії (_guard), яка могла щось здати чи оновити.
+        """
+        if not finder.words(query):
+            return {"rows": [], "total": 0, "searched": 0, "more": False}
+        pid = self.c.get("id")
+        memo = self._logv.get(pid)
+        if not memo or time.time() - memo["at"] > self.LOG_TTL:
+            u, p = self._creds()
+            entries = sc.log_paths(self._wc(), username=u, password=p)
+            memo = self._logv[pid] = {"at": time.time(), "entries": entries}
+        out = finder.commits(query, memo["entries"])
+        out["searched"] = len(memo["entries"])
+        out["more"] = len(memo["entries"]) >= sc.LOG_SEARCH_DEPTH
+        return out
 
     def full_paths(self, paths):
         """Повні шляхи на диску — у тому вигляді, який розуміє ця система."""

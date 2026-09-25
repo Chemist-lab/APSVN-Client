@@ -94,6 +94,29 @@ worded to share no words at all:
 
 The first two are never visible at the same time.
 
+### Search
+
+Every tab has a search box at the top (**Ctrl+F** jumps to it, **Esc** clears
+it). The rule is the same everywhere: words separated by spaces, each of them
+has to be found, capitals do not matter — Cyrillic included.
+
+* **Changes** — narrows the list to the files whose path has the words.
+  *Select all* then selects only what you see; anything selected that the
+  search hides is counted next to it (*3 selected · 1 not shown by the
+  search*), because *Submit* sends everything selected.
+* **Explorer** — searches **the whole project**, not just the open folder:
+  an asset, a shot, a file name. *new_w* finds the asset's folder and
+  *new_w.blend* — not every texture inside the folder, although their paths
+  mention it too; *new_w png* finds exactly those pictures. What is found
+  stands in the list with the folder it is in, and behaves like any other
+  row: pick it, open it, lock it, drag it into Blender. Clicking a folder
+  there goes into it. Files that are on the server but not downloaded yet are
+  found as well.
+* **Project history** — the commits whose note, author or **changed files**
+  have the words, with the files that matched under each one: *new_w* finds
+  every commit that touched that asset. The last 2000 commits are searched.
+* **Tasks** — by task name, type, folder or person.
+
 ### A single file's history
 
 Click the **file name** in the list and *What happened to …* opens: who did
@@ -390,9 +413,10 @@ part of the root, with the code in `Resources/app`.
 | `vendor/`       | pywebview, keyring and their dependencies |
 | `svn/`          | SlikSvn (Subversion CLI, Apache-2.0) |
 | `explorer.py`   | the Explorer: one folder at a time |
+| `finder.py`     | search: the whole project by name, commits by file, note or author |
 | `blendthumb.py` | preview embedded in a `.blend` |
 | `imgthumb.py`   | previews for png/jpg/tga/exr |
-| `tests/`        | 694 checks without a server, up to 24 more (read-only) against the real one |
+| `tests/`        | 716 checks without a server, up to 24 more (read-only) against the real one |
 
 Settings live in `%APPDATA%\APSVN\config.json`, format 2:
 `{"format":2, "projects":[…], "current":"<id>", …mirror of the current one…}`.
@@ -784,6 +808,20 @@ behind decisions that look odd until you know why.
   `/todos`, which this one no longer has), the list of all productions is
   for admins only, so a project without tasks yet opens `/open-productions`
   instead. A server without Kitsu keeps the studio website's pages.
+* **Search reads the disk and remembers; it does not ask svn for every
+  letter.** The Explorer's search walks the project folder itself
+  (`finder.index`, a fraction of a second) instead of `svn list -R` or a
+  project-wide `svn status` — those are the network, or seconds on a big
+  copy. What svn knows about a found file (changed, whose lock, newer on the
+  server, not downloaded yet) comes from the last check with the server, as
+  in the Explorer. The walk is remembered for 15 seconds, so typing does not
+  walk the project again for every letter. History search takes the last
+  2000 commits with their changed paths in one `svn log -v`, remembers them
+  for two minutes, and searches in memory. Any long action (Get latest,
+  Submit, a move) forgets both — the files and the history may have changed.
+  A found file must have one of the words in its own name, not just in its
+  path: otherwise the name of an asset would bring up everything inside its
+  folder.
 * **What a person may do with a task, the server says — APSVN does not
   guess.** A colleague's task opens from the name on its file, and a
   supervisor may change any task, so guessing would mean buttons that refuse
@@ -1052,7 +1090,7 @@ decision, not a gap.
 
 ### Tests
 
-Without a server — 694 checks against a temporary `file://` repository (and,
+Without a server — 716 checks against a temporary `file://` repository (and,
 for the studio server, a fake one on `127.0.0.1`); they leave nothing behind:
 
 ```bash
@@ -1066,13 +1104,13 @@ runtime\python.exe tests\test_apsvn.py
 * `test_api.py` — the `Api` layer: exactly what the interface calls;
 * `test_history.py` — a file's history with renames, bringing a version back,
   bringing a deleted file back, names containing `@`, recognising a foreign or
-  nested folder;
+  nested folder, searching the history by file, note and author;
 * `test_projects.py` — several projects: config migration, per-project
   passwords, switching, removing from the list, a corrupted config;
 * `test_progress.py` — progress events, honest percentages, estimated time;
 * `test_folders.py` — a dropped folder full of files;
 * `test_explorer.py` — the Explorer: paths, locks, what may be launched,
-  escaping the project folder, thumbnails.
+  escaping the project folder, thumbnails, searching the whole project.
 * `test_conflicts.py` — all four kinds of conflict: that each one is
   visible, that the old buttons could not resolve the tree ones, that the
   new ones do, that a rescue copy is taken first, and that none of them

@@ -357,9 +357,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                      + [{"kind": "image", "raw": "p%d.png" % i, "name": "p%d" % i,
                          "state": "packed", "target": None} for i in range(30)])
             return self._send(200, {"state": "ok", "blender": "4.2", "links": links,
+                                    "path": "/trunk/Shots/sh010.blend",
                                     "closure": {"files": [
-                                        {"path": "/trunk/tex/wood.png"},
-                                        {"path": "/trunk/rig.blend"}],
+                                        {"path": "/trunk/tex/wood.png", "kind": "image",
+                                         "via": "/trunk/Shots/sh010.blend"},
+                                        {"path": "/trunk/rig.blend", "kind": "library",
+                                         "via": "/trunk/Shots/sh010.blend"},
+                                        {"path": "/trunk/tex/skin.png", "kind": "image",
+                                         "via": "/trunk/rig.blend"}],
                                         "pending": [], "problems": 2}})
         if p == "/api/v1/repos/demo/usedby":
             users = {"/trunk/tex/wood.png": ["/trunk/Shots/sh010.blend",
@@ -689,7 +694,15 @@ check("проблеми — лише missing/absolute; external — не про�
 check("ціль проблеми — у шляхах копії",
       any(p["target"] == "tex/gone.png" for p in dp["problems"]), dp["problems"])
 check("сцена тягне файл, що зараз їде з сервера",
-      dp["uses"] == 2 and dp["newer"] == ["tex/wood.png"], dp)
+      dp["uses"] == 3 and dp["newer"] == ["tex/wood.png"], dp)
+fs = dp.get("files") or []
+check("які САМЕ файли — поіменно, спершу напряму, потім через бібліотеки",
+      [(f["path"], f["kind"], f["via"]) for f in fs] ==
+      [("rig.blend", "library", None), ("tex/wood.png", "image", None),
+       ("tex/skin.png", "image", "rig.blend")], fs)
+check("…зі свіжістю: що їде з сервера і чого на диску ще немає",
+      [f["newer"] for f in fs] == [False, True, False] and
+      all(f["on_disk"] is False for f in fs), fs)
 fl = api.file_links("tex/wood.png")
 check("текстура: хто використовує, у шляхах копії",
       fl.get("used_by", {}).get("users") == ["Shots/sh010.blend", "Shots/sh020.blend"],

@@ -311,12 +311,14 @@ this appears, and nothing else changes.
   contents match an older version (you brought one back and have not
   submitted it), that is recognised too, by the checksum the server keeps.
 * **What a scene uses, and who uses a file.** Pick a `.blend` in the
-  Explorer: how many project files it pulls in, what is packed, what comes
-  live from shared storage (`X:\…` — by studio convention that is how it
-  should be, not a mistake), what is broken (missing, wrong letter case, a
-  full path that only works on the author's machine) — and a warning when
-  files it uses are newer on the server. Pick a texture or a library: which
-  scenes use it.
+  Explorer: **which project files it pulls in, by name** — the libraries and
+  images it links directly, then what comes through them (*through
+  rig_Ruka_01.blend*), each marked if it is newer on the server or not
+  downloaded yet; click one to go to it in the Explorer. Also how much is
+  packed, what comes live from shared storage (`X:\…` — by studio convention
+  that is how it should be, not a mistake), and what is broken (missing,
+  wrong letter case, a full path that only works on the author's machine).
+  Pick a texture or a library: which scenes use it — click to go there.
 * **Deleting something scenes still use** — before the submit, APSVN lists
   the scenes that would open without it and asks.
 * **A conflict shows both sides as pictures** — yours and your colleague's —
@@ -454,7 +456,7 @@ part of the root, with the code in `Resources/app`.
 | `blender.py`    | which Blender opens a scene: the studio's version, found on this machine |
 | `blendthumb.py` | preview embedded in a `.blend` |
 | `imgthumb.py`   | previews for png/jpg/tga/exr |
-| `tests/`        | 804 checks without a server, up to 24 more (read-only) against the real one |
+| `tests/`        | 806 checks without a server, up to 24 more (read-only) against the real one |
 
 Settings live in `%APPDATA%\APSVN\config.json`, format 2:
 `{"format":2, "projects":[…], "current":"<id>", …mirror of the current one…}`.
@@ -1168,7 +1170,7 @@ decision, not a gap.
 
 ### Tests
 
-Without a server — 804 checks against a temporary `file://` repository (and,
+Without a server — 806 checks against a temporary `file://` repository (and,
 for the studio server, a fake one on `127.0.0.1`); they leave nothing behind:
 
 ```bash

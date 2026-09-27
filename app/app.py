@@ -1138,8 +1138,25 @@ class Api:
         incoming = {f["path"] for f in (self._last.get(pid) or {}).get("files", [])
                     if f.get("remote_change")}
         newer = [f for f in files if f in incoming]
+        # Які САМЕ файли проєкту сцена тягне — поіменно (сервер це й так
+        # віддає; раніше звідси йшло лише число). via — через яку бібліотеку,
+        # якщо не напряму: сцена бере риг, а риг — текстури.
+        wc, me = self._wc(), d.get("path")
+        rows = []
+        for f in closure.get("files") or []:
+            local = srv.local_path(prefix, f.get("path"))
+            if not local:
+                continue
+            via = f.get("via")
+            rows.append({
+                "path": local, "kind": f.get("kind") or "",
+                "via": None if not via or via == me else (srv.local_path(prefix, via) or via),
+                "newer": local in incoming,
+                "on_disk": os.path.isfile(os.path.join(wc, local.replace("/", os.sep)))})
+        rows.sort(key=lambda r: (r["via"] is not None, r["path"].lower()))
         return {"state": "ok", "blender": d.get("blender"), "total": len(links),
                 "counts": counts, "problems": problems, "uses": len(files),
+                "files": rows[:300],
                 "newer": newer[:20], "newer_n": len(newer),
                 "pending": len(closure.get("pending") or [])}
 

@@ -2305,6 +2305,23 @@ function renderLinks(side, l) {
       sec.append(dimLine(parts.length ? parts.join(" · ") : "nothing — the scene is self-contained",
         c.external ? "“from shared storage” — full paths outside SVN (X:\\…), read live " +
                      "from the NAS. That is how the studio does it, not a mistake." : ""));
+      // Які саме файли проєкту — поіменно; клік показує файл у провіднику.
+      const rows = dp.files || [];
+      if (rows.length) {
+        const list = document.createElement("div");
+        list.className = "uses";
+        const draw = n => {
+          list.innerHTML = "";
+          for (const f of rows.slice(0, n)) list.append(useRow(f));
+          if (rows.length > n) {
+            const more = mini("Show all " + rows.length, "", () => draw(rows.length));
+            more.classList.add("uses-more");
+            list.append(more);
+          }
+        };
+        draw(12);
+        sec.append(list);
+      }
       if (dp.newer_n) {
         const w = document.createElement("div");
         w.className = "side-l warn-l";
@@ -2333,12 +2350,50 @@ function renderLinks(side, l) {
       for (const u of ub.users.slice(0, 8)) {
         const r = document.createElement("div");
         r.className = "side-l mono-l"; r.textContent = u; r.title = u;
+        if (!u.startsWith("/")) {                 // у копії — можна показати
+          r.classList.add("link-l");
+          r.title = u + "\nClick to show it in the Explorer";
+          r.onclick = () => goExplore(u, false);
+        }
         sec.append(r);
       }
       if (ub.n > 8) sec.append(dimLine("…and " + (ub.n - 8) + " more"));
       sec.append(dimLine("renaming or deleting this file breaks them"));
     }
   }
+}
+
+// Типи посилань сцени — як їх називає сервер (blenddeps.WANT).
+const KIND_WORD = { library: "linked scene", image: "image", sound: "sound",
+                    font: "font", clip: "movie clip", cache: "cache", volume: "volume" };
+
+// Рядок «що сцена використовує»: ім'я, тека, через що, свіжість.
+function useRow(f) {
+  const r = document.createElement("div");
+  r.className = "use-r" + (f.on_disk ? "" : " ghost-row");
+  r.append(iconEl("fico", f.path, false, f.kind === "library" ? "🧩" : "📄"));
+  const i = f.path.lastIndexOf("/");
+  const t = document.createElement("div");
+  t.className = "use-t";
+  const nm = document.createElement("div");
+  nm.className = "use-n"; nm.textContent = f.path.slice(i + 1);
+  const sub = document.createElement("div");
+  sub.className = "use-s";
+  sub.textContent = [i > 0 ? f.path.slice(0, i) : "project root"]
+    .concat(f.via ? ["through " + baseOf(f.via)] : []).join(" · ");
+  // свіжість — рядком під іменем, а не «пігулкою» праворуч: панель вузька,
+  // і пігулка з'їдала саме ім'я файлу
+  const fresh = f.newer ? "newer on the server" : !f.on_disk ? "not downloaded yet" : "";
+  if (fresh) {
+    const w = document.createElement("div");
+    w.className = "use-w"; w.textContent = fresh;
+    t.append(nm, sub, w);
+  } else t.append(nm, sub);
+  r.append(t);
+  r.title = f.path + " — " + (KIND_WORD[f.kind] || f.kind || "file") +
+    (f.via ? "\nlinked through " + f.via : "") + "\nClick to show it in the Explorer";
+  r.onclick = () => goExplore(f.path, false);
+  return r;
 }
 
 /* Зайняти цілу теку. Subversion лока на теку не має взагалі, тож це означає

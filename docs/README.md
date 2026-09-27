@@ -225,6 +225,29 @@ was *just before* it — in that commit itself it no longer exists. The dialog
 says so before you agree. Files you have unsubmitted changes in are left alone
 and listed by name afterwards, rather than quietly overwritten.
 
+### Which Blender opens a scene
+
+The studio chooses **one Blender version** for everybody (on the studio
+server), and **Lock and open** — any *Open* of a `.blend` — starts exactly
+that version on every computer, whatever Windows would pick for `.blend`
+there. APSVN finds it by itself: the installer's folders, what the installer
+registered, *Programs and Features*.
+
+* If that version is **not installed** on this computer, APSVN says so
+  **before** locking anything, and offers **Download Blender 5.1** (its page
+  on blender.org) or **Show where it is…** — for a portable copy unpacked
+  from a zip; APSVN asks that Blender its version and takes it only if it is
+  the studio's. It does not open the scene in another version instead: a
+  file saved in a different Blender can lose things.
+* If the studio has **not chosen** a version, a `.blend` opens as before —
+  in whatever the computer uses for `.blend`. If nothing on the computer
+  opens `.blend` files, the newest Blender APSVN can find does.
+* **⚙ Settings → 🧊 Blender…** shows the studio's version, what exactly a
+  scene will open with here, and which versions are installed.
+
+The version is remembered, so without the network scenes still open in the
+studio's Blender, not in any.
+
 ### What the studio server adds
 
 If the project lives on the studio's own server (svn-native — an address like
@@ -414,9 +437,10 @@ part of the root, with the code in `Resources/app`.
 | `svn/`          | SlikSvn (Subversion CLI, Apache-2.0) |
 | `explorer.py`   | the Explorer: one folder at a time |
 | `finder.py`     | search: the whole project by name, commits by file, note or author |
+| `blender.py`    | which Blender opens a scene: the studio's version, found on this machine |
 | `blendthumb.py` | preview embedded in a `.blend` |
 | `imgthumb.py`   | previews for png/jpg/tga/exr |
-| `tests/`        | 716 checks without a server, up to 24 more (read-only) against the real one |
+| `tests/`        | 766 checks without a server, up to 24 more (read-only) against the real one |
 
 Settings live in `%APPDATA%\APSVN\config.json`, format 2:
 `{"format":2, "projects":[…], "current":"<id>", …mirror of the current one…}`.
@@ -822,6 +846,26 @@ behind decisions that look odd until you know why.
   A found file must have one of the words in its own name, not just in its
   path: otherwise the name of an asset would bring up everything inside its
   folder.
+* **A scene opens in the studio's Blender, found on each machine — not in
+  whatever Windows prefers for `.blend`.** On the administrator's own
+  computer (2026-09-27) the per-user default was one version, the
+  installer's registration another, and eight versions were installed: every
+  artist's machine answers “which Blender?” differently, and a scene saved
+  in one version can lose things in another. So the version is the
+  studio's — `studio.blender` in the server's `/api/v1/` answer, `major.minor`
+  (that is how the installer names its folders; a patch release installs
+  over the previous one) — and `blender.py` finds it locally without running
+  anything: the installer's folders, the ProgIds registered for `.blend`, the
+  *Uninstall* entries. A portable copy is taken only after asking it
+  `--version`: a folder name proves nothing. The program is chosen **before**
+  the lock, so a missing Blender never leaves the artist holding a file
+  nothing can open; there is deliberately no “open it in another version
+  anyway”. It starts detached, through `blender-launcher.exe` when it is
+  there, as Windows itself does — bare `blender.exe` is a console program
+  and would bring a black window along. Without a studio version the old
+  behaviour stays, except that a computer where nothing opens `.blend`
+  (`AssocQueryString` finds no program) gets the newest Blender found rather
+  than “Could not open the file” with the file already locked.
 * **What a person may do with a task, the server says — APSVN does not
   guess.** A colleague's task opens from the name on its file, and a
   supervisor may change any task, so guessing would mean buttons that refuse
@@ -1090,7 +1134,7 @@ decision, not a gap.
 
 ### Tests
 
-Without a server — 716 checks against a temporary `file://` repository (and,
+Without a server — 766 checks against a temporary `file://` repository (and,
 for the studio server, a fake one on `127.0.0.1`); they leave nothing behind:
 
 ```bash
@@ -1127,6 +1171,9 @@ runtime\python.exe tests\test_apsvn.py
   Windows does not know), folders, junk input, the cache;
 * `test_incoming.py` — what “Get latest” will bring: your own commit does
   not make you “behind”, a colleague's additions, edits and deletions do.
+* `test_blender.py` — versions as the studio, the installer and Blender
+  write them, finding the one needed (installed, shown by hand, missing),
+  starting it detached through the launcher, and what this machine has;
 * `test_refresh.py` — *Get latest* pressed while the background check holds
   the lock waits and succeeds, a second action during a real transfer is
   still refused at once, reading history is not a transfer, and an update

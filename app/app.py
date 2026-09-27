@@ -81,6 +81,7 @@ try:
     import keyring
     import webview
     import svn_client as sc
+    import blender
     import explorer as ex
     import finder
     import shellicon as si
@@ -589,6 +590,16 @@ class Api:
                        # стартові файли шотів — /templates у корені проєкту;
                        # None, якщо копію знято з підтеки й її тут не видно
                        "templates": srv.local_path(w[1], "/templates")}
+                # Версія Blender'а для всієї студії — з панелі адміністратора
+                # сервера (див. blender.py). Пам'ятаємо в проєкті: без мережі
+                # теж має відкриватися та сама версія, а не будь-яка.
+                studio = h.get("studio") if isinstance(h.get("studio"), dict) else {}
+                out["blender"] = blender.parse_version(studio.get("blender"))
+                out["admin_page"] = (w[0].api.rsplit("/api/", 1)[0] + "/admin/"
+                                     if out["admin"] else None)
+                if p.get("studio_blender") != out["blender"]:
+                    p["studio_blender"] = out["blender"]
+                    save_conf(self.conf)
                 ttl = 600
             except srv.ApiError as e:
                 out = {"ok": False, "why": "error", "error": str(e),
@@ -1863,11 +1874,106 @@ class Api:
             raise sc.SvnError(
                 "APSVN does not open files of this kind — use “Show in "
                 "folder” and open it yourself if you trust it.")
+        # Blender — ДО лока: нічим відкрити — то й займати нема чого.
+        exe = self._blender_for_open() if path.lower().endswith(".blend") else None
         if take_lock:
             self._lock_explained(wc, [path], u, p)
-        if not desktop.open_path(full):
+        if exe:
+            try:
+                blender.launch(exe, full)
+            except OSError:
+                raise sc.SvnError("Could not start Blender: %s" % exe)
+        elif not desktop.open_path(full):
             raise sc.SvnError("Could not open the file")
         return ("Locked and opened" if take_lock else "Opened")
+
+    # --- який Blender відкриває .blend (див. blender.py) ---
+    def _studio_blender(self):
+        """Версія студії: із сервера, а без мережі — остання відома."""
+        s = self.server_status()
+        if s.get("ok"):
+            return s.get("blender")
+        return (self._proj() or {}).get("studio_blender")
+
+    def _blender_for_open(self):
+        """Чим відкривати .blend: шлях до Blender'а; None — як вирішить система.
+
+        Студія задала версію — лише вона. Немає її тут — відмова (і ДО лока):
+        в іншій версії сцена може щось загубити, тож «відкрити хоч чимось»
+        тут гірше, ніж не відкрити. Не задала — як раніше, система; а якщо
+        системі нічим (портативний Blender без реєстрації) — найновіший
+        знайдений, замість «Could not open the file» із уже зайнятим файлом.
+        """
+        custom = self.conf.get("blender_paths") or {}
+        studio = self._studio_blender()
+        if studio:
+            exe = blender.find(studio, custom)
+            if not exe:
+                raise sc.SvnError("The studio works in Blender %s, and it is not "
+                                  "installed on this computer." % studio)
+            return exe
+        if not desktop.WINDOWS or desktop.default_app(".blend"):
+            return None
+        exe = blender.newest(custom)
+        if not exe:
+            raise sc.SvnError("There is no Blender on this computer to open it with.")
+        return exe
+
+    def blender_check(self):
+        """Для інтерфейсу, ДО «Lock and open»: чи є чим відкрити .blend."""
+        studio = self._studio_blender()
+        try:
+            return {"missing": False, "exe": self._blender_for_open(),
+                    "studio": studio}
+        except sc.SvnError as e:
+            return {"missing": True, "why": str(e), "studio": studio}
+
+    def blender_info(self):
+        """Для вікна «Blender…»: версія студії, чим відкриється, що тут стоїть."""
+        info = self.blender_check()
+        s = self.server_status()
+        custom = self.conf.get("blender_paths") or {}
+        info.update(system=desktop.default_app(".blend"),
+                    installed=sorted(blender.everything(custom), key=blender.vkey),
+                    custom=dict(custom), windows=desktop.WINDOWS,
+                    admin_page=s.get("admin_page") if s.get("ok") else None)
+        return info
+
+    def choose_blender(self):
+        """Людина показує свій Blender (портативний, не з інсталятора).
+
+        Версію питаємо в самого Blender'а. Не та, що в студії, — не беремо:
+        інакше «показав, де Blender» тихо обійшло б правило студії.
+        """
+        if desktop.MAC:
+            r = window.create_file_dialog(webview.OPEN_DIALOG, directory="/Applications")
+        else:
+            r = window.create_file_dialog(webview.OPEN_DIALOG,
+                                          file_types=("Programs (*.exe)",))
+        exe = r[0] if isinstance(r, (list, tuple)) else r
+        if not exe:
+            return None
+        exe = str(exe)
+        name = os.path.basename(exe.rstrip("/\\")).lower()
+        if not (name in ("blender.exe", "blender-launcher.exe", "blender") or
+                (desktop.MAC and name.startswith("blender") and name.endswith(".app"))):
+            raise sc.SvnError("That is not Blender — pick blender.exe.")
+        ver = blender.probe(exe)
+        if not ver:
+            raise sc.SvnError("Could not find out which Blender that is.")
+        studio = self._studio_blender()
+        if studio and ver != studio:
+            raise sc.SvnError("That is Blender %s — the studio works in %s."
+                              % (ver, studio))
+        self.conf.setdefault("blender_paths", {})[ver] = exe
+        save_conf(self.conf)
+        return "Blender %s will open from %s" % (ver, exe)
+
+    def blender_download(self):
+        """Сторінка завантаження саме версії студії — адреса складається тут."""
+        if not desktop.open_path(blender.download_page(self._studio_blender())):
+            raise sc.SvnError("Could not open the browser")
+        return True
 
     def reveal(self, path):
         """Показати файл у провіднику системи, виділивши саме його."""

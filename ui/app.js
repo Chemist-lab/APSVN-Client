@@ -1986,6 +1986,13 @@ document.addEventListener("keydown", ev => {
 async function openIt(it, after) {
   // Що оновити потім: у провіднику — поточну теку, у задачах — задачу.
   after = after || (() => openDir(brPath));
+  // Сцена відкривається у версії Blender'а студії. Немає її — кажемо ДО лока,
+  // а не займаємо файл, який потім нічим відкрити.
+  if (/\.blend$/i.test(it.path || it.name || "")) {
+    let b = null;
+    try { b = await api().blender_check(); } catch (e) { b = null; }
+    if (b && b.missing) return blenderMissing(b, () => openIt(it, after));
+  }
   const free = it.binary && !it.lock_mine && !it.lock_owner;
   if (free && pref("lock_open_silent")) {     // людина попросила не питати
     return act("open_file", [it.path, true], "Locking and opening…")
@@ -2019,6 +2026,60 @@ async function openIt(it, after) {
     if (!a.ok) return;
   }
   act("open_file", [it.path, false], "Opening…");
+}
+
+async function blenderMissing(b, retry) {
+  const where = "Install it — or, if you keep Blender somewhere else (a portable " +
+                "copy), show APSVN where it is.";
+  const a = await ask({
+    title: b.studio ? "The studio works in Blender " + b.studio
+                    : "There is no Blender to open it with",
+    lines: b.studio
+      ? ["It is not installed on this computer, and APSVN does not open the " +
+         "scene in another version: a file saved in a different Blender can " +
+         "lose things.", where]
+      : ["Nothing on this computer opens .blend files, and APSVN found no " +
+         "Blender installed.", where],
+    ok: "Show where it is…",
+    alt: b.studio ? "Download Blender " + b.studio : "Download Blender",
+  });
+  if (a.ok) { if (await chooseBlender()) return retry(); }
+  else if (a.alt) api().blender_download().catch(e => fail(e));
+}
+
+async function chooseBlender() {
+  try {
+    const r = await api().choose_blender();
+    if (r) toast(r, 6000);
+    return !!r;
+  } catch (e) { fail(e); return false; }
+}
+
+// ⚙ → «Blender…»: яка версія в студії, чим відкриється тут, що встановлено.
+async function blenderDialog() {
+  let b;
+  try { b = await api().blender_info(); } catch (e) { return fail(e); }
+  const sys = b.windows ? "Windows" : "the system";
+  const opens = b.exe ? b.exe
+    : b.missing ? "nothing — Blender " + (b.studio || "") + " is not installed here"
+    : (b.system || "whatever " + sys + " chooses");
+  const lines = b.studio
+    ? ["Every .blend opens in the studio's version, whatever this computer's " +
+       "default is. The version is set on the studio server."]
+    : ["The studio has not chosen a Blender version, so .blend files open in " +
+       "whatever " + sys + " uses by default. The version is set on the studio " +
+       "server" + (b.admin_page ? ", on its admin page." : " by its administrator.")];
+  const a = await ask({
+    title: "Blender for .blend files",
+    facts: [["Studio version", b.studio ? "Blender " + b.studio : "not set"],
+            ["Opens with", opens],
+            ["Installed here", b.installed.length ? b.installed.join(", ") : "none found"]],
+    factsFirst: true,
+    lines: lines,
+    ok: "OK", noCancel: true,
+    alt: "Show where Blender is…",
+  });
+  if (a.alt && await chooseBlender()) blenderDialog();
 }
 
 // Бічна панель для одного файлу. «Reading…» — лише коли вибрали ІНШИЙ файл:
@@ -2481,6 +2542,7 @@ async function checkUpdate(quiet) {
 }
 
 $("b-update-app").onclick = () => { menuOpen(false); checkUpdate(false); };
+$("b-blender").onclick = () => { menuOpen(false); blenderDialog(); };
 for (const id of ["b-fix", "b-server", "b-forget", "b-update-app"])
   $(id).addEventListener("click", () => menuOpen(false));
 // клік по самому меню не має його закривати — інакше пункт не встигне спрацювати

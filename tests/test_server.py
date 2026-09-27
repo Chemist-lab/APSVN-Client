@@ -190,6 +190,7 @@ TASKS.update({
              linked=False),
 })
 KITSU_ON = False          # чи сервер каже «kitsu: true» у списку задач
+STUDIO = {}               # налаштування студії в /api/v1/ (версія Blender'а)
 KITSU_MOVES = {32: [{"key": "wip", "name": "Work In Progress"},
                     {"key": "wfa", "name": "Waiting For Approval"}],
                33: [{"key": "done", "name": "Done"}, {"key": "retake", "name": "Retake"},
@@ -237,6 +238,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                               extra={"Location": TRAP + "/steal"})
         if p == "/api/v1/":
             return self._send(200, {"api": 1, "user": USER, "admin": False,
+                                    "studio": dict(STUDIO),
                                     "endpoints": ["/api/v1/repos",
                                                   "/api/v1/tasks",
                                                   "/api/v1/tasks/<id>",
@@ -752,6 +754,127 @@ api.open_web("mine")
 check("сервер без Kitsu — знову сторінки сайту студії", opened == [HOST + "/browse/mine"],
       opened)
 app.desktop.open_path = real_open
+
+print("--- Api: Blender студії — версія з сервера, лок лише коли є чим відкрити ---")
+import blender
+import time as _time
+BL = os.path.join(BASE, "blenders")
+os.makedirs(os.path.join(BL, "4.2"))
+os.makedirs(os.path.join(BL, "5.1"))
+b42, b51 = os.path.join(BL, "4.2", "blender.exe"), os.path.join(BL, "5.1", "blender.exe")
+for f in (b42, b51):
+    open(f, "wb").write(b"MZ")
+real = (blender.installed, blender.launch, blender.probe, api._lock_explained,
+        app.desktop.default_app, app.desktop.open_path, app.window)
+launched, locked, opened = [], [], []
+blender.launch = lambda exe, path: launched.append((exe, path)) or True
+api._lock_explained = lambda wc, paths, u, p: locked.append(list(paths)) or "Locked"
+app.desktop.open_path = lambda u: opened.append(u) or True
+try:
+    STUDIO["blender"] = "5.1.2"
+    api._srv.clear()
+    s = api.server_status()
+    check("версія студії з сервера — major.minor", s.get("blender") == "5.1", s.get("blender"))
+    check("…і запам'ятана в проєкті (для роботи без мережі)",
+          api.c.get("studio_blender") == "5.1", api.c.get("studio_blender"))
+    blender.installed = lambda fresh=False: {"4.2": b42}
+    b = api.blender_check()
+    check("потрібної версії тут немає — інтерфейс знає це ДО лока",
+          b["missing"] and b["studio"] == "5.1", b)
+    try:
+        api.open_file("Shots/sh010.blend", True)
+        check("open_file без версії студії — відмова", False, launched)
+    except sc.SvnError as e:
+        check("open_file без версії студії — відмова з поясненням", "5.1" in str(e), e)
+    check("…і лок НЕ взято, і нічого не відкрито", locked == [] and not launched
+          and not opened, (locked, launched, opened))
+    blender.installed = lambda fresh=False: {"4.2": b42, "5.1": b51}
+    api.open_file("Shots/sh010.blend", True)
+    check("версія є — спершу лок, потім саме вона",
+          locked == [["Shots/sh010.blend"]] and len(launched) == 1 and
+          launched[0][0] == b51 and launched[0][1].endswith("sh010.blend"), (locked, launched))
+    check("…а не те, що система вважає за замовчуванням", opened == [], opened)
+    api._srv[api.c["id"]] = {"out": {"ok": False, "why": "error"}, "until": _time.time() + 60}
+    check("без мережі — остання відома версія студії", api._studio_blender() == "5.1")
+
+    # студія версії не задала — як раніше
+    STUDIO.pop("blender")
+    api._srv.clear()
+    launched.clear()
+    app.desktop.default_app = lambda ext: r"C:\Blender\blender-launcher.exe"
+    api.open_file("Shots/sh010.blend", False)
+    check("версії не задано — вирішує система, як раніше", len(opened) == 1 and not launched,
+          (opened, launched))
+    check("…і в проєкті це теж запам'ятано (без мережі — не стара версія)",
+          api.c.get("studio_blender") is None)
+    if app.desktop.WINDOWS:
+        app.desktop.default_app = lambda ext: None
+        opened.clear()
+        api.open_file("Shots/sh010.blend", False)
+        check("системі нічим — найновіший знайдений, а не «Could not open»",
+              launched and launched[-1][0] == b51 and not opened, (launched, opened))
+        blender.installed = lambda fresh=False: {}
+        locked.clear()
+        try:
+            api.open_file("Shots/sh010.blend", True)
+            check("жодного Blender'а — відмова", False)
+        except sc.SvnError as e:
+            check("жодного Blender'а — відмова ДО лока", "no Blender" in str(e)
+                  and locked == [], (e, locked))
+        blender.installed = lambda fresh=False: {"4.2": b42, "5.1": b51}
+    app.desktop.default_app = real[4]
+
+    # людина показує свій Blender
+    class FakeWin:
+        def __init__(self, path):
+            self.path = path
+
+        def create_file_dialog(self, *a, **k):
+            return [self.path] if self.path else None
+
+    STUDIO["blender"] = "5.1"
+    api._srv.clear()
+    port = os.path.join(BL, "portable", "blender.exe")
+    os.makedirs(os.path.dirname(port))
+    open(port, "wb").write(b"MZ")
+    app.window = FakeWin(port)
+    blender.probe = lambda exe: "4.2"
+    try:
+        api.choose_blender()
+        check("показали не ту версію — не береться", False)
+    except sc.SvnError as e:
+        check("показали не ту версію — не береться, і сказано чому",
+              "4.2" in str(e) and "5.1" in str(e) and
+              "5.1" not in (api.conf.get("blender_paths") or {}), e)
+    blender.probe = lambda exe: "5.1"
+    r = api.choose_blender()
+    check("показали 5.1 — запам'ятано", (api.conf.get("blender_paths") or {}).get("5.1")
+          == port, r)
+    blender.installed = lambda fresh=False: {"4.2": b42}
+    check("…і вона тепер відкриває сцени", api.blender_check().get("exe") == port)
+    app.window = FakeWin(os.path.join(BL, "notepad.exe"))
+    try:
+        api.choose_blender()
+        check("не Blender — не береться", False)
+    except sc.SvnError as e:
+        check("не Blender — не береться", "not Blender" in str(e), e)
+    app.window = FakeWin(None)
+    check("вікно вибору закрили — нічого не змінилось", api.choose_blender() is None)
+    opened.clear()
+    api.blender_download()
+    check("завантаження — сторінка саме версії студії",
+          opened == ["https://download.blender.org/release/Blender5.1/"], opened)
+    info = api.blender_info()
+    check("вікно «Blender…»: студія, чим відкриється, що стоїть",
+          info["studio"] == "5.1" and info["exe"] == port and "4.2" in info["installed"]
+          and "5.1" in info["installed"], info)
+finally:
+    (blender.installed, blender.launch, blender.probe, api._lock_explained,
+     app.desktop.default_app, app.desktop.open_path, app.window) = real
+    STUDIO.clear()
+    api._srv.clear()
+    api.server_status()       # пам'ять про сервер — як до блоку: далі на неї спираються
+    api.conf.pop("blender_paths", None)
 
 print("--- Api: без сервера все мовчки вимикається ---")
 api2 = app.Api()

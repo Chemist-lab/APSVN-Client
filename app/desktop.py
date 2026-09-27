@@ -74,6 +74,37 @@ def open_path(path):
         return False
 
 
+def default_app(ext):
+    """Чим система відкриває файли з цим розширенням: шлях до програми або None.
+
+    Лише Windows — так само питає й сам Провідник (AssocQueryStringW). None
+    на Windows означає «нічим»: подвійний клік показав би «Як відкрити цей
+    файл?», а os.startfile кинув би помилку. На інших системах None — «не
+    знаємо», і вирішує система, як і раніше.
+    """
+    if not WINDOWS:
+        return None
+    import ctypes
+    from ctypes import wintypes
+    try:
+        fn = ctypes.windll.shlwapi.AssocQueryStringW
+        fn.argtypes = [ctypes.c_uint, ctypes.c_uint, wintypes.LPCWSTR,
+                       wintypes.LPCWSTR, wintypes.LPWSTR,
+                       ctypes.POINTER(wintypes.DWORD)]
+        fn.restype = ctypes.c_long
+        size = wintypes.DWORD(1024)
+        buf = ctypes.create_unicode_buffer(size.value)
+        # ASSOCF_INIT_IGNOREUNKNOWN: інакше для «нічийого» розширення Windows
+        # віддає OpenWith.exe — те саме вікно «Як відкрити?»
+        hr = fn(0x400, 2, ext, None, buf, ctypes.byref(size))   # 2 = EXECUTABLE
+    except (OSError, AttributeError, ValueError):
+        return None
+    exe = buf.value if hr == 0 else ""
+    if not exe or os.path.basename(exe).lower() == "openwith.exe":
+        return None
+    return exe
+
+
 def reveal(path):
     """Показати файл у провіднику, ВИДІЛИВШИ його.
 

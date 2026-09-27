@@ -2425,6 +2425,11 @@ async function refreshEverything() {
   // Провідник: усе, що пам'яталося про теки, — з до оновлення.
   brCache.clear();
   const jobs = [refreshTreeBranches()];
+  // Що каже сервер (версія Blender'а студії й проєкту тощо) бекенд пам'ятає
+  // 10 хвилин. Натиснуте «Get latest» чи «Server» — це «хочу свіже зараз»:
+  // інакше щойно задана в панелі версія Blender'а доїхала б аж за 10 хвилин.
+  jobs.push(api().server_status(true)
+    .then(s => { if (s && s.ok) srvInfo = s; }).catch(() => {}));
   if (brDir && view !== "browse") jobs.push(openDir(brPath, { history: true }));
   if (view === "log") jobs.push(loadLog(true));
   if (view === "file" && hist) jobs.push(openHistory(hist.path));

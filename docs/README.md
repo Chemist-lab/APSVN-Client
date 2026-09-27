@@ -248,7 +248,8 @@ registered, *Programs and Features*.
   and which versions are installed.
 
 The version is remembered, so without the network scenes still open in the
-studio's Blender, not in any.
+studio's Blender, not in any. A version just changed on the server reaches
+APSVN within ten minutes — at once after **Get latest** or **⟳ Server**.
 
 ### What the studio server adds
 

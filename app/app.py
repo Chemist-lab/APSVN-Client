@@ -197,6 +197,30 @@ _DEVICES = {"con", "prn", "aux", "nul"} | {"com%d" % i for i in range(1, 10)} | 
     {"lpt%d" % i for i in range(1, 10)}
 
 
+_HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+# Кольори теми студії (/api/v1/ → studio.theme), як їх описує сервер.
+THEME_KEYS = ("primary", "on_primary", "accent_light", "accent_dark",
+              "background", "on_background")
+
+
+def look_of(hello):
+    """/api/v1/ -> назва й тема студії; кожне поле — правильне або None.
+
+    Лого — лише зі свого ж сервера, по шляху API (/…/api/v1/theme/logo?v=…):
+    ніякої чужої адреси, куди пішов би пароль.
+    """
+    studio = hello.get("studio") if isinstance(hello.get("studio"), dict) else {}
+    t = studio.get("theme") if isinstance(studio.get("theme"), dict) else {}
+    colors = {k: (t[k].lower() if isinstance(t.get(k), str) and _HEX.match(t[k])
+                  else None) for k in THEME_KEYS}
+    logo = t.get("logo") if isinstance(t.get("logo"), str) else None
+    if logo and not (logo.startswith("/") and not logo.startswith("//") and
+                     logo.split("?")[0].endswith("/api/v1/theme/logo")):
+        logo = None
+    name = " ".join(str(studio.get("name") or "").split())[:60] or None
+    return {"name": name, "colors": colors, "logo_url": logo}
+
+
 def folder_name(name):
     """Ім'я проєкту -> ім'я його теки на диску, або None, якщо з нього теки не буде."""
     n = _BAD_IN_NAME.sub("_", str(name or "")).strip(" .")
@@ -631,6 +655,8 @@ class Api:
                         ttl = 60
                 out["admin_page"] = (w[0].api.rsplit("/api/", 1)[0] + "/admin/"
                                      if out["admin"] else None)
+                # Тема студії (назва, кольори, лого) — див. studio_look.
+                self._keep_look(p, look_of(h), client)
                 # Пам'ятаємо в проєкті: без мережі теж має відкриватися та
                 # сама версія, а не будь-яка.
                 if (p.get("studio_blender"), bool(p.get("blender_pinned"))) != \
@@ -2048,6 +2074,69 @@ class Api:
         elif not desktop.open_path(full):
             raise sc.SvnError("Could not open the file")
         return ("Locked and opened" if take_lock else "Opened")
+
+    # --- тема студії: APSVN у кольорах студії, як її сайт ---
+    def _keep_look(self, p, look, client):
+        """Пам'ятати тему в проєкті — без мережі вона та сама — а лого файлом.
+
+        Лого качаємо лише тоді, коли змінилася його адреса: ?v= у ній міняється
+        разом із картинкою, тож за адресою його можна тримати скільки завгодно.
+        """
+        f = None
+        if look["logo_url"]:
+            key = hashlib.sha1((client.where.origin + look["logo_url"])
+                               .encode("utf-8")).hexdigest()[:16]
+            f = os.path.join(CONF_DIR, "logos", key + ".txt")
+            if not os.path.isfile(f):
+                try:
+                    got = client.blob(look["logo_url"])
+                    uri = srv.data_uri(*got) if got else None
+                    if uri:
+                        os.makedirs(os.path.dirname(f), exist_ok=True)
+                        with open(f, "w", encoding="ascii") as fh:
+                            fh.write(uri)
+                except (srv.ApiError, OSError):
+                    pass
+            if not os.path.isfile(f):
+                f = None
+        keep = {"name": look["name"], "colors": look["colors"], "logo_file": f}
+        if p.get("studio_look") != keep:
+            p["studio_look"] = keep
+            save_conf(self.conf)
+
+    def studio_look(self, fresh=True):
+        """Тема студії для інтерфейсу; None — сервер її не має (не svn-native).
+
+        fresh=False — лише те, що запам'ятав проєкт, без жодного запиту: так
+        програма з першої ж миті в кольорах студії, а не блимає своїми, поки
+        сервер відповідає.
+
+        themed — чи задав адміністратор хоч щось (колір або лого). Ні — APSVN
+        лишається у своєму вигляді, хоч назва студії й є (вона типово є
+        завжди): «↺ у панелі» має повертати APSVN до себе.
+        """
+        if fresh:
+            self.server_status()              # освіжає studio_look у проєкті
+        look = (self._proj() or {}).get("studio_look")
+        if not look:
+            return None
+        logo = None
+        f = look.get("logo_file")
+        if f and os.path.isfile(f):
+            try:
+                with open(f, encoding="ascii") as fh:
+                    text = fh.read()
+                logo = text if text.startswith("data:image/") else None
+            except (OSError, ValueError):
+                logo = None
+        colors = {k: (look.get("colors") or {}).get(k) for k in THEME_KEYS}
+        return {"name": look.get("name"), "colors": colors, "logo": logo,
+                "themed": bool(logo or any(colors.values()))}
+
+    def window_colors(self, bg=None, fg=None):
+        """Заголовок вікна — як шапка студії (Windows 11); None — системний."""
+        ok = lambda c: c if isinstance(c, str) and _HEX.match(c) else None
+        return desktop.caption_colors(window, ok(bg), ok(fg))
 
     # --- який Blender відкриває .blend (див. blender.py) ---
     def _blender_rule(self):

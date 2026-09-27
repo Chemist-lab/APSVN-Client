@@ -297,6 +297,53 @@ def drag_supported(window):
                 and getattr(window, "native", None) is not None)
 
 
+def colorref(hexcolor):
+    """«#rrggbb» -> COLORREF (0x00BBGGRR) — так колір чекає Windows."""
+    h = str(hexcolor).lstrip("#")
+    return int(h[0:2], 16) | (int(h[2:4], 16) << 8) | (int(h[4:6], 16) << 16)
+
+
+def caption_colors(window, bg=None, fg=None):
+    """Заголовок вікна — у кольорах шапки студії. None — системні кольори.
+
+    DWMWA_CAPTION_COLOR (35) і DWMWA_TEXT_COLOR (36) є лише з Windows 11;
+    старша система відповідає помилкою — і заголовок лишається системним,
+    як був. Дескриптор вікна беремо на ЙОГО потоці: WinForms не любить,
+    коли Handle чіпають з інших.
+    """
+    if not WINDOWS or window is None or getattr(window, "native", None) is None:
+        return False
+    import ctypes
+    form = window.native
+    got = {}
+    try:
+        from System import Func, Type
+
+        def run():
+            try:
+                got["h"] = int(form.Handle.ToInt64())
+            except Exception:
+                pass
+            return None
+
+        form.Invoke(Func[Type](run))
+    except Exception:
+        return False
+    if not got.get("h"):
+        return False
+    try:
+        dwm = ctypes.windll.dwmapi
+        ok = True
+        for attr, col in ((35, bg), (36, fg)):
+            v = ctypes.c_uint(colorref(col) if col else 0xFFFFFFFF)   # «як у системи»
+            if dwm.DwmSetWindowAttribute(ctypes.c_void_p(got["h"]), ctypes.c_uint(attr),
+                                         ctypes.byref(v), ctypes.c_uint(4)) != 0:
+                ok = False
+        return ok
+    except (OSError, AttributeError, ValueError):
+        return False
+
+
 def _winforms():
     """WinForms через pythonnet. У програмі їх уже підняв pywebview, але
     покладатися на це не можна: тести й будь-який інший виклик ідуть без

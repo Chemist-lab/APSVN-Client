@@ -370,6 +370,7 @@ async function _refresh(mine) {
     THUMBS.clear();
     renderTaskBadge();
     resetExplorer();
+    loadLook(false);                            // тема — одразу, з пам'яті проєкту
     // пошук — свій у кожного проєкту
     taskQuery = ""; setQ("tasks-q", "");
     filesQuery = ""; filesShown = null; setQ("files-q", "");
@@ -2484,7 +2485,7 @@ async function refreshEverything() {
   // 10 хвилин. Натиснуте «Get latest» чи «Server» — це «хочу свіже зараз»:
   // інакше щойно задана в панелі версія Blender'а доїхала б аж за 10 хвилин.
   jobs.push(api().server_status(true)
-    .then(s => { if (s && s.ok) srvInfo = s; }).catch(() => {}));
+    .then(s => { if (s && s.ok) srvInfo = s; return loadLook(true); }).catch(() => {}));
   if (brDir && view !== "browse") jobs.push(openDir(brPath, { history: true }));
   if (view === "log") jobs.push(loadLog(true));
   if (view === "file" && hist) jobs.push(openHistory(hist.path));
@@ -3366,12 +3367,99 @@ const myTasks = () => ((tasksData && tasksData.tasks) || [])
   .filter(t => t.mine && t.status !== "done");
 const me = () => (tasksData && tasksData.me) || (srvInfo && srvInfo.me) || (st && st.me);
 
+/* Тема студії (studio_look): назва, кольори й лого, які адміністратор задав
+   у панелі сервера (Theme). Не задав нічого — вигляд APSVN; задав частину —
+   підміняємо лише її. APSVN темний, тож для тексту й рамок — accent_dark. */
+let lookSig = null;
+const APSVN_ICON = $("brand-ico").getAttribute("src");   // своя іконка — повертати її
+
+function hexMix(a, b, t) {                  // a·t + b·(1−t), обидва «#rrggbb»
+  const rgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+  const x = rgb(a), y = rgb(b);
+  return "#" + x.map((v, i) => Math.round(v * t + y[i] * (1 - t))
+    .toString(16).padStart(2, "0")).join("");
+}
+
+// Яскравість кольору 0..1 — щоб знати, темний фон студії чи світлий.
+function lum(h) {
+  const [r, g, b] = [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+}
+
+function initialsOf(name) {
+  const w = String(name || "").replace(/([a-zа-яіїєґ])([A-ZА-ЯІЇЄҐ])/g, "$1 $2")
+    .split(/[\s_.\-]+/).filter(Boolean);
+  return ((w[0] || "?")[0] + (w[1] ? w[1][0] : (w[0] || "").slice(1, 2))).toUpperCase();
+}
+
+function applyLook(l) {
+  const sig = JSON.stringify(l || null);
+  if (sig === lookSig) return;
+  lookSig = sig;
+  const on = !!(l && l.themed);
+  const c = on ? l.colors : {};
+  const root = document.documentElement.style;
+  const set = (k, v) => v ? root.setProperty(k, v) : root.removeProperty(k);
+  const both = c.background && c.on_background;
+  set("--acc", c.accent_dark);
+  set("--primary", c.primary);
+  set("--on-primary", c.on_primary);
+  set("--head-bg", c.background);
+  set("--head-tx", c.on_background);
+  set("--head-dim", both ? hexMix(c.on_background, c.background, 0.7) : null);
+  set("--head-line", both ? hexMix(c.on_background, c.background, 0.25) : null);
+  // Темний фон студії — у нього весь каркас: бічна панель, смуги, поля,
+  // рамки, наведення. Інакше шапка була б сірою, а решта — синюватою APSVN.
+  // Світлий — лише шапка: APSVN темний, і білий каркас його зламав би.
+  const B = c.background, T = c.on_background || "#ffffff";
+  const dark = !!B && lum(B) < 0.35;
+  set("--panel", dark ? B : null);
+  set("--bg", dark ? hexMix(B, "#000000", 0.8) : null);
+  set("--side", dark ? hexMix(B, "#000000", 0.9) : null);
+  set("--input", dark ? hexMix(B, "#000000", 0.6) : null);
+  set("--hover", dark ? hexMix(T, B, 0.05) : null);
+  set("--raise", dark ? hexMix(T, B, 0.09) : null);
+  set("--line", dark ? hexMix(T, B, 0.13) : null);
+  set("--dim", dark ? hexMix(T, B, 0.6) : null);
+  set("--sel", c.accent_dark ? hexMix(c.accent_dark, dark ? B : "#161a22", 0.14) : null);
+  const ico = $("brand-ico"), ini = $("brand-initials"), brand = $("brand");
+  if (on) {
+    brand.textContent = l.name || "APSVN";
+    brand.title = "APSVN";
+    if (l.logo) {
+      ico.src = l.logo;
+      ico.classList.add("logo");
+      ico.classList.remove("hidden");
+      ini.classList.add("hidden");
+    } else {
+      ico.classList.add("hidden");
+      ini.textContent = initialsOf(l.name || "APSVN");
+      ini.classList.remove("hidden");
+    }
+  } else {
+    brand.textContent = "APSVN";
+    brand.title = "";
+    ico.src = APSVN_ICON;
+    ico.classList.remove("logo", "hidden");
+    ini.classList.add("hidden");
+  }
+  api().window_colors(c.background || null, c.on_background || null).catch(() => {});
+}
+
+async function loadLook(fresh) {
+  const mine = gen;
+  let l;
+  try { l = await api().studio_look(!!fresh); } catch (e) { return; }
+  if (mine === gen) applyLook(l);
+}
+
 async function initServer() {
   const mine = gen;
   let s = null;
   try { s = await api().server_status(false); } catch (e) { s = null; }
   if (mine !== gen) return;
   srvInfo = s;
+  loadLook(true);
   // «ще невідомо» — копію ще не читали (іде передача). Спитаємо трохи згодом.
   // Сервер не відповів — теж спитаємо ще, коли мине його пам'ять про невдачу
   // (хвилина; для відмови в паролі — п'ять). Інакше після ранку без мережі

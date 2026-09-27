@@ -192,6 +192,7 @@ TASKS.update({
 KITSU_ON = False          # чи сервер каже «kitsu: true» у списку задач
 STUDIO = {}               # налаштування студії в /api/v1/ (версія Blender'а)
 REPO_INFO = {}            # /repos/demo: порожньо — старий сервер (404); fail — збій
+LOGO = {}                 # /api/v1/theme/logo: body, ctype; порожньо — 404
 REPOS = [{"name": "demo", "head": 30, "author": "andrii", "date": "2026-09-25 15:48",
           "archived": False},
          {"name": "Film_2026", "head": 7, "author": "taras", "date": "2026-09-27 12:00",
@@ -308,6 +309,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._send(200, {"processes": PROCESSES, "modes": ["new", "same", "none"]})
         if p == "/api/v1/repos":
             return self._send(200, {"repos": REPOS})
+        if p == "/api/v1/theme/logo":
+            if not LOGO:
+                return self._send(404, {"error": "no logo"})
+            return self._send(200, LOGO["body"], LOGO.get("ctype", "image/png"))
         if p in ("/api/v1/repos/demo", "/api/v1/repos/demo/"):
             if not REPO_INFO:
                 return self._send(404, {"error": "not found"})
@@ -1045,6 +1050,73 @@ try:
         check("ім'я, з якого теки не буде, — відмова", True)
 finally:
     api.add_project, sc.probe_dir = real_add, real_probe_dir
+
+print("--- Api: тема студії — назва, кольори, лого ---")
+LK = app.look_of({"studio": {"name": "  Alt   Picture  ", "theme": {
+    "primary": "#FFF78F", "on_primary": "black", "accent_light": "#736f40",
+    "accent_dark": "#fff78f;x", "background": "#000000", "on_background": None,
+    "logo": "/api/v1/theme/logo?v=1"}}})
+check("назва — без зайвих пробілів", LK["name"] == "Alt Picture", LK["name"])
+check("кольори — лише справжні #rrggbb (решта — None)",
+      LK["colors"] == {"primary": "#fff78f", "on_primary": None, "accent_light": "#736f40",
+                       "accent_dark": None, "background": "#000000", "on_background": None},
+      LK["colors"])
+for bad in ("https://evil.example/api/v1/theme/logo", "//evil.example/api/v1/theme/logo",
+            "/api/v1/tasks", "javascript:alert(1)"):
+    check("лого з чужої адреси не беремо: %s" % bad,
+          app.look_of({"studio": {"theme": {"logo": bad}}})["logo_url"] is None)
+check("сервер без теми — усе None",
+      app.look_of({"api": 1}) == {"name": None, "logo_url": None,
+                                  "colors": {k: None for k in app.THEME_KEYS}})
+check("колір для заголовка вікна Windows — 0x00BBGGRR",
+      app.desktop.colorref("#fff78f") == 0x8FF7FF)
+
+PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4"
+                       "//8/AAX+Av4N70a4AAAAAElFTkSuQmCC")
+STUDIO.update(name="AltPicture", theme={
+    "primary": "#fff78f", "on_primary": "#000000", "accent_light": "#736f40",
+    "accent_dark": "#fff78f", "background": "#000000", "on_background": "#ffffff",
+    "logo": "/api/v1/theme/logo?v=3f2a9c"})
+LOGO.update(body=PNG, ctype="image/png")
+api._srv.clear()
+n0 = sum(1 for h in Handler.hits if "/theme/logo" in h[1])
+lk = api.studio_look()
+check("тема студії: кольори, назва, лого картинкою",
+      lk["themed"] and lk["name"] == "AltPicture" and lk["colors"]["primary"] == "#fff78f"
+      and (lk["logo"] or "").startswith("data:image/png;base64,"), lk)
+check("…і запам'ятана в проєкті (кольори й файл лого, не сама картинка)",
+      api.c["studio_look"]["colors"]["background"] == "#000000" and
+      os.path.isfile(api.c["studio_look"]["logo_file"]), api.c.get("studio_look"))
+api._srv.clear()
+api.studio_look()
+check("лого за тією самою адресою вдруге не качаємо",
+      sum(1 for h in Handler.hits if "/theme/logo" in h[1]) - n0 == 1)
+STUDIO["theme"]["logo"] = "/api/v1/theme/logo?v=77"
+api._srv.clear()
+api.studio_look()
+check("?v= змінилось — нова картинка", sum(1 for h in Handler.hits if "/theme/logo" in h[1])
+      - n0 == 2)
+n1 = len(Handler.hits)
+check("з пам'яті — без жодного запиту (програма одразу в кольорах студії)",
+      api.studio_look(False)["themed"] and len(Handler.hits) == n1)
+api._srv[api.c["id"]] = {"out": {"ok": False, "why": "error"}, "until": _time.time() + 60}
+check("без мережі — остання відома тема", api.studio_look()["colors"]["primary"] == "#fff78f")
+LOGO.update(body=b"<html>login</html>", ctype="text/html")
+STUDIO["theme"]["logo"] = "/api/v1/theme/logo?v=html"
+api._srv.clear()
+check("«лого», яке не картинка, — не лого", api.studio_look()["logo"] is None)
+STUDIO["theme"] = {k: None for k in list(STUDIO["theme"])}
+api._srv.clear()
+lk = api.studio_look()
+check("↺ у панелі (усе null) — APSVN знову у своєму вигляді, хоч назва й лишилась",
+      lk["themed"] is False and lk["name"] == "AltPicture", lk)
+check("вікна немає (тести) — заголовок не чіпаємо й не падаємо",
+      api.window_colors("#000000", "not-a-colour") is False)
+STUDIO.pop("name", None)
+STUDIO.pop("theme", None)
+LOGO.clear()
+api._srv.clear()
+api.server_status()
 
 print("--- Api: без сервера все мовчки вимикається ---")
 api2 = app.Api()

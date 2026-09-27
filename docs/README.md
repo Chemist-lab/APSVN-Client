@@ -257,6 +257,19 @@ The version is remembered, so without the network scenes still open in the
 studio's Blender, not in any. A version just changed on the server reaches
 APSVN within ten minutes — at once after **Get latest** or **⟳ Server**.
 
+### The studio's look
+
+On the studio server APSVN looks like the studio's own site: the name,
+logo and colours the administrator sets in the server's panel (*Theme*).
+The top bar takes the studio's background — and so does the window's title
+bar on Windows 11 — the main buttons its main colour, links, tabs, frames and
+the selection its accent. A **dark** studio background tints the whole frame
+(side panel, bars, fields) in the same tone; a light one only the top bar,
+since APSVN itself is dark. Without a logo the studio's initials stand in
+for it. Nothing set, or reset with *↺* in the panel — APSVN's own look. The
+look is remembered, so APSVN starts in it at once and keeps it without the
+network.
+
 ### What the studio server adds
 
 If the project lives on the studio's own server (svn-native — an address like
@@ -456,7 +469,7 @@ part of the root, with the code in `Resources/app`.
 | `blender.py`    | which Blender opens a scene: the studio's version, found on this machine |
 | `blendthumb.py` | preview embedded in a `.blend` |
 | `imgthumb.py`   | previews for png/jpg/tga/exr |
-| `tests/`        | 806 checks without a server, up to 24 more (read-only) against the real one |
+| `tests/`        | 823 checks without a server, up to 24 more (read-only) against the real one |
 
 Settings live in `%APPDATA%\APSVN\config.json`, format 2:
 `{"format":2, "projects":[…], "current":"<id>", …mirror of the current one…}`.
@@ -902,6 +915,21 @@ behind decisions that look odd until you know why.
   `CON_`, `NUL.txt` → `NUL_.txt`), a folder that exists with other things in
   it is refused rather than mixed with the project, and a place inside
   another project is refused before anything is downloaded.
+* **The studio's theme is data, not code, and only from its own server.**
+  `/api/v1/` → `studio.name` and `studio.theme` (`primary`, `on_primary`,
+  `accent_light`, `accent_dark`, `background`, `on_background`, `logo`).
+  A colour is taken only as a strict `#rrggbb` (anything else is “not set”),
+  and the logo only from a path of the same server's API
+  (`…/api/v1/theme/logo?v=…`) — a foreign address would receive the
+  password with the request. The logo is fetched once per `?v=` (it changes
+  with the picture) and kept as a file; the colours are kept in the project,
+  so the next start is in the studio's colours before the server answers.
+  APSVN is dark, so it uses `accent_dark`. The colours go into CSS variables;
+  the dark greys APSVN used to write out literally (fields, hover, pills,
+  side panels) are variables too, so a dark studio background can re-tint
+  the whole frame from one colour, while a light one only colours the top
+  bar. The title bar: `DwmSetWindowAttribute` (caption and text colour),
+  Windows 11 only — elsewhere it stays the system's.
 * **What a person may do with a task, the server says — APSVN does not
   guess.** A colleague's task opens from the name on its file, and a
   supervisor may change any task, so guessing would mean buttons that refuse
@@ -1170,7 +1198,7 @@ decision, not a gap.
 
 ### Tests
 
-Without a server — 806 checks against a temporary `file://` repository (and,
+Without a server — 823 checks against a temporary `file://` repository (and,
 for the studio server, a fake one on `127.0.0.1`); they leave nothing behind:
 
 ```bash

@@ -191,6 +191,7 @@ TASKS.update({
 })
 KITSU_ON = False          # чи сервер каже «kitsu: true» у списку задач
 STUDIO = {}               # налаштування студії в /api/v1/ (версія Blender'а)
+REPO_INFO = {}            # /repos/demo: порожньо — старий сервер (404); fail — збій
 KITSU_MOVES = {32: [{"key": "wip", "name": "Work In Progress"},
                     {"key": "wfa", "name": "Waiting For Approval"}],
                33: [{"key": "done", "name": "Done"}, {"key": "retake", "name": "Retake"},
@@ -299,6 +300,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True})
         if p == "/api/v1/processes":
             return self._send(200, {"processes": PROCESSES, "modes": ["new", "same", "none"]})
+        if p in ("/api/v1/repos/demo", "/api/v1/repos/demo/"):
+            if not REPO_INFO:
+                return self._send(404, {"error": "not found"})
+            if REPO_INFO.get("fail"):
+                return self._send(500, {"error": "internal error"})
+            return self._send(200, {"name": "demo", "head": 30, "author": USER,
+                                    "date": "", "archived": False,
+                                    "blender": REPO_INFO.get("blender"),
+                                    "blender_pinned": bool(REPO_INFO.get("pinned"))})
         if p == "/api/v1/repos/demo/shots":
             # задачі навмисно не в порядку кроків — порядок має дати процес
             return self._send(200, {"repo": "demo", "shots": [{
@@ -795,7 +805,8 @@ try:
           launched[0][0] == b51 and launched[0][1].endswith("sh010.blend"), (locked, launched))
     check("…а не те, що система вважає за замовчуванням", opened == [], opened)
     api._srv[api.c["id"]] = {"out": {"ok": False, "why": "error"}, "until": _time.time() + 60}
-    check("без мережі — остання відома версія студії", api._studio_blender() == "5.1")
+    check("без мережі — остання відома версія студії",
+          api._blender_rule()["version"] == "5.1")
 
     # студія версії не задала — як раніше
     STUDIO.pop("blender")
@@ -868,10 +879,55 @@ try:
     check("вікно «Blender…»: студія, чим відкриється, що стоїть",
           info["studio"] == "5.1" and info["exe"] == port and "4.2" in info["installed"]
           and "5.1" in info["installed"], info)
+
+    print("--- …а проєкт може мати свою версію (/repos/<repo>) ---")
+    api.conf.pop("blender_paths", None)
+    blender.installed = lambda fresh=False: {"4.2": b42, "5.1": b51}
+    REPO_INFO.update(blender="5.1", pinned=False)     # новий сервер, своєї немає
+    api._srv.clear()
+    s = api.server_status()
+    check("новий сервер, своєї версії в проєкту немає — діє студійна",
+          s["blender"] == "5.1" and not s["blender_pinned"], s)
+    REPO_INFO.update(blender="4.2", pinned=True)
+    api._srv.clear()
+    s = api.server_status()
+    check("своя версія проєкту важливіша за студійну",
+          s["blender"] == "4.2" and s["blender_pinned"] and s["blender_studio"] == "5.1", s)
+    check("…і запам'ятана разом із тим, що вона своя",
+          api.c.get("studio_blender") == "4.2" and api.c.get("blender_pinned") is True)
+    blender.installed = lambda fresh=False: {"5.1": b51}
+    b = api.blender_check()
+    check("її тут немає — сказано саме про проєкт",
+          b["missing"] and b["pinned"] and "This project works in Blender 4.2" in b["why"], b)
+    blender.installed = lambda fresh=False: {"4.2": b42, "5.1": b51}
+    launched.clear()
+    api.open_file("Shots/sh010.blend", True)
+    check("є — сцена відкривається в 4.2, а не в студійній 5.1",
+          launched and launched[-1][0] == b42, launched)
+    app.window = FakeWin(port)
+    blender.probe = lambda exe: "5.1"
+    try:
+        api.choose_blender()
+        check("для проєкту на 4.2 студійну 5.1 не беремо", False)
+    except sc.SvnError as e:
+        check("для проєкту на 4.2 студійну 5.1 не беремо", "this project works in 4.2"
+              in str(e), e)
+    opened.clear()
+    api.blender_download()
+    check("завантаження — версія проєкту",
+          opened == ["https://download.blender.org/release/Blender4.2/"], opened)
+    REPO_INFO["fail"] = True
+    api._srv.clear()
+    s = api.server_status()
+    check("збій на /repos/<repo> — остання відома версія проєкту, а не студійна",
+          s["blender"] == "4.2" and s["blender_pinned"], s)
+    check("…і за хвилину спитаємо знову, а не за десять",
+          api._srv[api.c["id"]]["until"] - _time.time() < 90)
 finally:
     (blender.installed, blender.launch, blender.probe, api._lock_explained,
      app.desktop.default_app, app.desktop.open_path, app.window) = real
     STUDIO.clear()
+    REPO_INFO.clear()
     api._srv.clear()
     api.server_status()       # пам'ять про сервер — як до блоку: далі на неї спираються
     api.conf.pop("blender_paths", None)

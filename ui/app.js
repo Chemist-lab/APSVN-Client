@@ -2032,16 +2032,17 @@ async function blenderMissing(b, retry) {
   const where = "Install it — or, if you keep Blender somewhere else (a portable " +
                 "copy), show APSVN where it is.";
   const a = await ask({
-    title: b.studio ? "The studio works in Blender " + b.studio
-                    : "There is no Blender to open it with",
-    lines: b.studio
+    title: b.version ? (b.pinned ? "This project works in Blender "
+                                 : "The studio works in Blender ") + b.version
+                     : "There is no Blender to open it with",
+    lines: b.version
       ? ["It is not installed on this computer, and APSVN does not open the " +
          "scene in another version: a file saved in a different Blender can " +
          "lose things.", where]
       : ["Nothing on this computer opens .blend files, and APSVN found no " +
          "Blender installed.", where],
     ok: "Show where it is…",
-    alt: b.studio ? "Download Blender " + b.studio : "Download Blender",
+    alt: b.version ? "Download Blender " + b.version : "Download Blender",
   });
   if (a.ok) { if (await chooseBlender()) return retry(); }
   else if (a.alt) api().blender_download().catch(e => fail(e));
@@ -2061,19 +2062,27 @@ async function blenderDialog() {
   try { b = await api().blender_info(); } catch (e) { return fail(e); }
   const sys = b.windows ? "Windows" : "the system";
   const opens = b.exe ? b.exe
-    : b.missing ? "nothing — Blender " + (b.studio || "") + " is not installed here"
+    : b.missing ? "nothing — Blender " + (b.version || "") + " is not installed here"
     : (b.system || "whatever " + sys + " chooses");
-  const lines = b.studio
+  const lines = b.pinned
+    ? ["This project has its own Blender version, and every .blend in it opens " +
+       "in that version, whatever this computer's default is. It is set in the " +
+       "project's settings on the studio server."]
+    : b.version
     ? ["Every .blend opens in the studio's version, whatever this computer's " +
        "default is. The version is set on the studio server."]
     : ["The studio has not chosen a Blender version, so .blend files open in " +
        "whatever " + sys + " uses by default. The version is set on the studio " +
        "server" + (b.admin_page ? ", on its admin page." : " by its administrator.")];
+  const facts = [];
+  if (b.pinned) facts.push(["This project", "Blender " + b.version + " (its own)"]);
+  facts.push(["Studio version", b.studio ? "Blender " + b.studio
+              : b.pinned ? "—" : b.version ? "Blender " + b.version : "not set"]);
+  facts.push(["Opens with", opens],
+             ["Installed here", b.installed.length ? b.installed.join(", ") : "none found"]);
   const a = await ask({
     title: "Blender for .blend files",
-    facts: [["Studio version", b.studio ? "Blender " + b.studio : "not set"],
-            ["Opens with", opens],
-            ["Installed here", b.installed.length ? b.installed.join(", ") : "none found"]],
+    facts: facts,
     factsFirst: true,
     lines: lines,
     ok: "OK", noCancel: true,

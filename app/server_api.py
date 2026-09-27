@@ -285,8 +285,13 @@ class Client:
 
     # --- що вміє сервер --------------------------------------------------
     def hello(self):
-        """{'api':1, 'user', 'admin', 'endpoints': [...]}"""
+        """{'api':1, 'user', 'admin', 'endpoints': [...], 'studio': {'blender'}}"""
         return self.get("")
+
+    def repo_info(self):
+        """Проєкт: head, archived, blender — версія, що діє для НЬОГО (своя
+        проєкту або студії), blender_pinned — чи своя. Старий сервер — 404."""
+        return self.get("repos/%s" % urllib.parse.quote(self.where.repo, safe=""))
 
     # --- задачі -----------------------------------------------------------
     def tasks(self, mine=False, status=None, inside=None, all_repos=False):

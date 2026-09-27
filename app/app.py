@@ -590,17 +590,36 @@ class Api:
                        # стартові файли шотів — /templates у корені проєкту;
                        # None, якщо копію знято з підтеки й її тут не видно
                        "templates": srv.local_path(w[1], "/templates")}
-                # Версія Blender'а для всієї студії — з панелі адміністратора
-                # сервера (див. blender.py). Пам'ятаємо в проєкті: без мережі
-                # теж має відкриватися та сама версія, а не будь-яка.
+                ttl = 600
+                # Версія Blender'а (див. blender.py): студійна — у /api/v1/
+                # (панель, Templates → «Blender version»), але проєкт може
+                # мати свою (властивість altpicture:blender на корені репо) —
+                # тоді діє вона. Яка діє саме тут, каже /repos/<repo>; старий
+                # сервер цієї точки не має (404) — тоді лише студійна.
                 studio = h.get("studio") if isinstance(h.get("studio"), dict) else {}
-                out["blender"] = blender.parse_version(studio.get("blender"))
+                out["blender_studio"] = blender.parse_version(studio.get("blender"))
+                out["blender"], out["blender_pinned"] = out["blender_studio"], False
+                try:
+                    info = client.repo_info()
+                    out["blender"] = blender.parse_version(info.get("blender"))
+                    out["blender_pinned"] = bool(out["blender"] and
+                                                 info.get("blender_pinned"))
+                except srv.ApiError as e:
+                    if e.code != 404:
+                        # не старий сервер, а збій: краще остання відома
+                        # версія проєкту, ніж студійна замість його власної
+                        out["blender"] = p.get("studio_blender", out["blender"])
+                        out["blender_pinned"] = bool(p.get("blender_pinned"))
+                        ttl = 60
                 out["admin_page"] = (w[0].api.rsplit("/api/", 1)[0] + "/admin/"
                                      if out["admin"] else None)
-                if p.get("studio_blender") != out["blender"]:
+                # Пам'ятаємо в проєкті: без мережі теж має відкриватися та
+                # сама версія, а не будь-яка.
+                if (p.get("studio_blender"), bool(p.get("blender_pinned"))) != \
+                        (out["blender"], out["blender_pinned"]):
                     p["studio_blender"] = out["blender"]
+                    p["blender_pinned"] = out["blender_pinned"]
                     save_conf(self.conf)
-                ttl = 600
             except srv.ApiError as e:
                 out = {"ok": False, "why": "error", "error": str(e),
                        "code": e.code}
@@ -1888,12 +1907,21 @@ class Api:
         return ("Locked and opened" if take_lock else "Opened")
 
     # --- який Blender відкриває .blend (див. blender.py) ---
-    def _studio_blender(self):
-        """Версія студії: із сервера, а без мережі — остання відома."""
+    def _blender_rule(self):
+        """Яка версія діє для цього проєкту: із сервера, без мережі — остання
+        відома. version — та, що діє; pinned — своя в проєкту (а не студійна);
+        studio — студійна (лише показати)."""
         s = self.server_status()
         if s.get("ok"):
-            return s.get("blender")
-        return (self._proj() or {}).get("studio_blender")
+            return {"version": s.get("blender"), "pinned": bool(s.get("blender_pinned")),
+                    "studio": s.get("blender_studio")}
+        p = self._proj() or {}
+        return {"version": p.get("studio_blender"), "pinned": bool(p.get("blender_pinned")),
+                "studio": None}
+
+    @staticmethod
+    def _who(rule):
+        return "This project" if rule["pinned"] else "The studio"
 
     def _blender_for_open(self):
         """Чим відкривати .blend: шлях до Blender'а; None — як вирішить система.
@@ -1905,12 +1933,12 @@ class Api:
         знайдений, замість «Could not open the file» із уже зайнятим файлом.
         """
         custom = self.conf.get("blender_paths") or {}
-        studio = self._studio_blender()
-        if studio:
-            exe = blender.find(studio, custom)
+        rule = self._blender_rule()
+        if rule["version"]:
+            exe = blender.find(rule["version"], custom)
             if not exe:
-                raise sc.SvnError("The studio works in Blender %s, and it is not "
-                                  "installed on this computer." % studio)
+                raise sc.SvnError("%s works in Blender %s, and it is not installed "
+                                  "on this computer." % (self._who(rule), rule["version"]))
             return exe
         if not desktop.WINDOWS or desktop.default_app(".blend"):
             return None
@@ -1921,12 +1949,12 @@ class Api:
 
     def blender_check(self):
         """Для інтерфейсу, ДО «Lock and open»: чи є чим відкрити .blend."""
-        studio = self._studio_blender()
+        out = self._blender_rule()
         try:
-            return {"missing": False, "exe": self._blender_for_open(),
-                    "studio": studio}
+            out.update(missing=False, exe=self._blender_for_open())
         except sc.SvnError as e:
-            return {"missing": True, "why": str(e), "studio": studio}
+            out.update(missing=True, exe=None, why=str(e))
+        return out
 
     def blender_info(self):
         """Для вікна «Blender…»: версія студії, чим відкриється, що тут стоїть."""
@@ -1961,17 +1989,17 @@ class Api:
         ver = blender.probe(exe)
         if not ver:
             raise sc.SvnError("Could not find out which Blender that is.")
-        studio = self._studio_blender()
-        if studio and ver != studio:
-            raise sc.SvnError("That is Blender %s — the studio works in %s."
-                              % (ver, studio))
+        rule = self._blender_rule()
+        if rule["version"] and ver != rule["version"]:
+            raise sc.SvnError("That is Blender %s — %s works in %s."
+                              % (ver, self._who(rule).lower(), rule["version"]))
         self.conf.setdefault("blender_paths", {})[ver] = exe
         save_conf(self.conf)
         return "Blender %s will open from %s" % (ver, exe)
 
     def blender_download(self):
-        """Сторінка завантаження саме версії студії — адреса складається тут."""
-        if not desktop.open_path(blender.download_page(self._studio_blender())):
+        """Сторінка завантаження саме потрібної версії — адреса складається тут."""
+        if not desktop.open_path(blender.download_page(self._blender_rule()["version"])):
             raise sc.SvnError("Could not open the browser")
         return True
 

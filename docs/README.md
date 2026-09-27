@@ -230,7 +230,8 @@ and listed by name afterwards, rather than quietly overwritten.
 The studio chooses **one Blender version** for everybody (on the studio
 server), and **Lock and open** — any *Open* of a `.blend` — starts exactly
 that version on every computer, whatever Windows would pick for `.blend`
-there. APSVN finds it by itself: the installer's folders, what the installer
+there. A project may keep **its own version** (say, a long production that
+stays on 4.2 while new ones move to 5.1) — then its scenes open in that one. APSVN finds it by itself: the installer's folders, what the installer
 registered, *Programs and Features*.
 
 * If that version is **not installed** on this computer, APSVN says so
@@ -242,8 +243,9 @@ registered, *Programs and Features*.
 * If the studio has **not chosen** a version, a `.blend` opens as before —
   in whatever the computer uses for `.blend`. If nothing on the computer
   opens `.blend` files, the newest Blender APSVN can find does.
-* **⚙ Settings → 🧊 Blender…** shows the studio's version, what exactly a
-  scene will open with here, and which versions are installed.
+* **⚙ Settings → 🧊 Blender…** shows the studio's version (and the
+  project's own, if it has one), what exactly a scene will open with here,
+  and which versions are installed.
 
 The version is remembered, so without the network scenes still open in the
 studio's Blender, not in any.
@@ -440,7 +442,7 @@ part of the root, with the code in `Resources/app`.
 | `blender.py`    | which Blender opens a scene: the studio's version, found on this machine |
 | `blendthumb.py` | preview embedded in a `.blend` |
 | `imgthumb.py`   | previews for png/jpg/tga/exr |
-| `tests/`        | 766 checks without a server, up to 24 more (read-only) against the real one |
+| `tests/`        | 775 checks without a server, up to 24 more (read-only) against the real one |
 
 Settings live in `%APPDATA%\APSVN\config.json`, format 2:
 `{"format":2, "projects":[…], "current":"<id>", …mirror of the current one…}`.
@@ -852,9 +854,16 @@ behind decisions that look odd until you know why.
   installer's registration another, and eight versions were installed: every
   artist's machine answers “which Blender?” differently, and a scene saved
   in one version can lose things in another. So the version is the
-  studio's — `studio.blender` in the server's `/api/v1/` answer, `major.minor`
-  (that is how the installer names its folders; a patch release installs
-  over the previous one) — and `blender.py` finds it locally without running
+  studio's, `major.minor` (that is how the installer names its folders; a
+  patch release installs over the previous one). Which one applies to a
+  project, the server says in `/api/v1/repos/<repo>`: `blender`, and
+  `blender_pinned` when it is the project's own (the `altpicture:blender`
+  property on the repository root) rather than the studio's. A server
+  without that endpoint (404) has only `studio.blender` in `/api/v1/`, and
+  that is used then. Any other failure keeps the project's last known
+  version and asks again in a minute — falling back to the studio's version
+  there would silently open a pinned project's scenes in the wrong Blender.
+  `blender.py` finds the version locally without running
   anything: the installer's folders, the ProgIds registered for `.blend`, the
   *Uninstall* entries. A portable copy is taken only after asking it
   `--version`: a folder name proves nothing. The program is chosen **before**
@@ -1134,7 +1143,7 @@ decision, not a gap.
 
 ### Tests
 
-Without a server — 766 checks against a temporary `file://` repository (and,
+Without a server — 775 checks against a temporary `file://` repository (and,
 for the studio server, a fake one on `127.0.0.1`); they leave nothing behind:
 
 ```bash

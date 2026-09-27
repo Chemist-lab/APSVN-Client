@@ -97,8 +97,10 @@ class Where:
     def __init__(self, origin, prefix, repo):
         self.origin = origin                  # https://host[:port]
         self.repo = repo                      # ім'я репозиторію
+        self.site = origin + prefix           # сайт студії (може бути в підтеці)
         self.api = origin + prefix + "/api/v1/"
         self.web = origin + prefix + "/browse/"
+        self.svn = origin + prefix + "/svn/"  # адреси проєктів: svn/<ім'я>
 
     def __repr__(self):
         return "Where(%r, %r)" % (self.api, self.repo)
@@ -129,6 +131,44 @@ def locate(root_url):
     origin = "%s://%s%s" % (u.scheme, host, (":%d" % port) if port else "")
     prefix = "".join("/" + p for p in parts[:-2])
     return Where(origin, prefix, urllib.parse.unquote(parts[-1]))
+
+
+# Що в адресі стоїть уже ПІСЛЯ сайту студії: проєкт (svn/…), переглядач,
+# панель, сам API. Людина вставляє що завгодно з того, що бачила в браузері.
+_SITE_TAILS = ("svn", "browse", "admin", "api", "viewvc")
+
+
+def studio_at(address):
+    """Адреса сервера студії, як її вводить людина, -> Where без проєкту, або None.
+
+    «svn.studio», «https://svn.studio/», адреса будь-якого проєкту
+    (https://svn.studio/svn/demo/trunk), сторінка переглядача — усе веде на
+    той самий https://svn.studio/api/v1/. Сайт у підтеці (https://h/tools)
+    теж. Без схеми — https: пароль іде з кожним запитом.
+    """
+    text = str(address or "").strip()
+    if not text:
+        return None
+    if "://" not in text:
+        text = "https://" + text
+    try:
+        u = urllib.parse.urlsplit(text)
+        port = u.port
+    except ValueError:
+        return None
+    if u.scheme not in ("http", "https") or not u.hostname:
+        return None
+    parts = [p for p in u.path.split("/") if p]
+    for i, p in enumerate(parts):
+        if p.lower() in _SITE_TAILS:
+            parts = parts[:i]
+            break
+    host = u.hostname
+    if ":" in host:
+        host = "[%s]" % host
+    # як і в locate(): не netloc, бо в ньому могли б сидіти user:password@
+    origin = "%s://%s%s" % (u.scheme, host, (":%d" % port) if port else "")
+    return Where(origin, "".join("/" + p for p in parts), "")
 
 
 def repo_path(prefix, local):

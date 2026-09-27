@@ -8,8 +8,14 @@ a handful of plain actions: **get latest**, **lock a file**, **submit**,
 
 1. Copy the whole `APSVN` folder (desktop, D: drive — anywhere).
 2. Run `APSVN.exe`.
-3. Fill in once: the project address, a folder on your computer, your user
-   name and password.
+3. Sign in once: the studio server's address, your user name and password.
+   APSVN shows the projects you may take; tick the ones you need, choose
+   **where to put them**, and each project goes into its own folder there,
+   named after it (`D:\Projects\Film_2026`).
+
+On any other Subversion server there is no list of projects — *Connect by a
+project's address instead* asks for the project's address and its folder,
+as before.
 
 Nothing to install — Python and svn live inside the folder.
 
@@ -330,8 +336,13 @@ broken network, and APSVN says so rather than “something went wrong”.
 
 ### Several projects
 
-The dropdown at the top left switches projects, **＋** adds one. The password
-is stored per project, so the same user name on two servers is not a problem.
+The dropdown at the top left switches projects, **＋** adds one. With a
+project from the studio server already here, **＋** does not ask for the
+password again — it goes straight to the list of projects, with the ones
+already on this computer ticked and greyed out. A folder that already
+exists and holds something else is never mixed with a project: that project
+is skipped, with the reason, and the others are taken. The password is
+stored per project, so the same user name on two servers is not a problem.
 A submit note you started typing stays with its own project.
 
 **Remove project from list** (under **⚙ Settings**) takes it out of APSVN only
@@ -443,7 +454,7 @@ part of the root, with the code in `Resources/app`.
 | `blender.py`    | which Blender opens a scene: the studio's version, found on this machine |
 | `blendthumb.py` | preview embedded in a `.blend` |
 | `imgthumb.py`   | previews for png/jpg/tga/exr |
-| `tests/`        | 775 checks without a server, up to 24 more (read-only) against the real one |
+| `tests/`        | 804 checks without a server, up to 24 more (read-only) against the real one |
 
 Settings live in `%APPDATA%\APSVN\config.json`, format 2:
 `{"format":2, "projects":[…], "current":"<id>", …mirror of the current one…}`.
@@ -876,6 +887,19 @@ behind decisions that look odd until you know why.
   behaviour stays, except that a computer where nothing opens `.blend`
   (`AssocQueryString` finds no program) gets the newest Blender found rather
   than “Could not open the file” with the file already locked.
+* **Signing in once lists the projects; the folders are APSVN's.** The
+  studio server says which projects a person may read (`/api/v1/repos`), so
+  artists do not copy project addresses from somebody's message. The
+  address the person types is reduced to the studio site whatever they
+  paste — `svn.studio`, a project's address, a page of the browser — and a
+  scheme-less one becomes https, since the password travels with every
+  request. The typed password is only checked, and stored (per project, as
+  always) only once a project is actually taken; with a studio project
+  already here its saved login is reused. Each project goes into
+  `<where>\<its name>`: the name is made safe for Windows (`:` → `_`, `CON` →
+  `CON_`, `NUL.txt` → `NUL_.txt`), a folder that exists with other things in
+  it is refused rather than mixed with the project, and a place inside
+  another project is refused before anything is downloaded.
 * **What a person may do with a task, the server says — APSVN does not
   guess.** A colleague's task opens from the name on its file, and a
   supervisor may change any task, so guessing would mean buttons that refuse
@@ -1144,7 +1168,7 @@ decision, not a gap.
 
 ### Tests
 
-Without a server — 775 checks against a temporary `file://` repository (and,
+Without a server — 804 checks against a temporary `file://` repository (and,
 for the studio server, a fake one on `127.0.0.1`); they leave nothing behind:
 
 ```bash

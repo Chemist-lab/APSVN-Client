@@ -2757,18 +2757,170 @@ $("brk-where").onclick = async () => {
 
 /* --- майстер підключення ---------------------------------------------- */
 
-function showSetup(cancelable) {
-  $("setup").classList.remove("hidden");
-  $("main").classList.add("hidden");
-  $("s-title").textContent = cancelable ? "New project" : "Connect to a project";
-  $("s-cancel").classList.toggle("hidden", !cancelable);
-  if (!cancelable && st && st.error) $("s-msg").textContent = st.error;
+/* Підключення проєктів. Головний шлях — увійти на сервер студії ОДИН раз:
+   APSVN показує проєкти, які можна взяти, людина позначає потрібні й вибирає,
+   КУДИ їх класти, а теку кожного проєкту (<куди>\<ім'я>) робить сам. Вже є
+   підключений проєкт на тому сервері — вхід береться з нього, пароль не
+   питаємо. Старий шлях «за адресою проєкту» лишається — для будь-якого
+   іншого сервера Subversion. */
+let studioCreds = null;           // введене зараз {address, user, password}; null — збережений вхід
+
+function setupPane(name) {
+  for (const p of ["login", "projects", "manual"])
+    $("s-" + p).classList.toggle("hidden", p !== name);
+  const first = { login: $("s-host").value ? "s-luser" : "s-host",
+                  projects: null, manual: "s-url" }[name];
+  if (first) setTimeout(() => $(first).focus(), 0);
 }
 
-$("s-cancel").onclick = () => {
+async function showSetup(cancelable) {
+  $("setup").classList.remove("hidden");
+  $("main").classList.add("hidden");
+  $("s-title").textContent = cancelable ? "Add a project" : "Connect to a project";
+  document.querySelectorAll(".s-cancel").forEach(
+    b => b.classList.toggle("hidden", !cancelable));
+  $("s-msg").textContent = (!cancelable && st && st.error) ? st.error : "";
+  let known = null;
+  try { known = await api().studio_known(); } catch (e) { known = null; }
+  if (known) {
+    $("s-host").value = known.address.replace(/^https:\/\//, "");
+    $("s-luser").value = known.user;
+    return listStudio(null);
+  }
+  setupPane("login");
+}
+
+document.querySelectorAll(".s-cancel").forEach(b => b.onclick = () => {
   $("setup").classList.add("hidden");
   $("main").classList.remove("hidden");
   $("s-msg").textContent = "";
+  $("s-lpass").value = "";
+  studioCreds = null;
+});
+$("s-to-manual").onclick = () => { $("s-msg").textContent = ""; setupPane("manual"); };
+$("s-to-studio").onclick = () => { $("s-msg").textContent = ""; setupPane("login"); };
+$("s-relogin").onclick = () => {
+  studioCreds = null;
+  $("s-lpass").value = "";
+  $("s-msg").textContent = "";
+  setupPane("login");
+};
+$("s-list").onclick = () => {
+  const c = { address: $("s-host").value.trim(), user: $("s-luser").value.trim(),
+              password: $("s-lpass").value };
+  if (!c.address || !c.user || !c.password) {
+    $("s-msg").textContent = "Fill in the server, your user name and password";
+    return;
+  }
+  listStudio(c);
+};
+$("s-lpass").onkeydown = e => { if (e.key === "Enter") $("s-list").click(); };
+
+async function listStudio(creds) {
+  $("s-msg").textContent = "";
+  busy(true, "Asking the server which projects you can take…");
+  let d;
+  try {
+    d = creds ? await api().studio_projects(creds.address, creds.user, creds.password)
+              : await api().studio_projects();
+  } catch (e) {
+    busy(false);
+    setupPane("login");
+    $("s-msg").textContent = clean(e);
+    return;
+  }
+  busy(false);
+  studioCreds = creds;
+  $("s-who").textContent = "Signed in as " + d.user + " · " +
+    d.address.replace(/^https?:\/\//, "");
+  const box = $("s-list-box");
+  box.innerHTML = "";
+  if (!d.projects.length) {
+    box.innerHTML = "<div class='empty' style='padding:18px'>There are no projects " +
+      "for you on this server yet — ask your administrator to add you.</div>";
+  }
+  for (const p of d.projects) {
+    const row = document.createElement("label");
+    row.className = "s-p" + (p.have.length ? " have" : "");
+    const cb = document.createElement("input");
+    cb.type = "checkbox"; cb.value = p.name;
+    cb.disabled = p.have.length > 0;
+    cb.checked = p.have.length > 0;
+    cb.onchange = syncStudioWhere;
+    const t = document.createElement("div");
+    const n = document.createElement("div");
+    n.className = "s-n"; n.textContent = p.name;
+    const m = document.createElement("div");
+    m.className = "s-m";
+    m.textContent = p.have.length ? "already on this computer: " + p.have.join(", ")
+      : (p.date ? "last change " + ago(p.date) + (p.author ? " by " + p.author : "") : "");
+    t.append(n, m);
+    row.append(cb, t);
+    if (p.archived) row.append(chip("archived — read-only", ""));
+    box.append(row);
+  }
+  if (!$("s-base").value) $("s-base").value = d.base || "";
+  syncStudioWhere();
+  setupPane("projects");
+}
+
+function studioPicked() {
+  return [...document.querySelectorAll("#s-list-box input:checked:not(:disabled)")]
+    .map(c => c.value);
+}
+
+// Під полем «куди» — куди саме ляже проєкт: <куди>\<ім'я>.
+function syncStudioWhere() {
+  const base = $("s-base").value.trim().replace(/[\\/]+$/, "");
+  const names = studioPicked();
+  const sep = base.includes("/") && !base.includes("\\") ? "/" : "\\";
+  $("s-where").textContent = !base ? ""
+    : names.length ? "→ " + names.map(n => base + sep + n).join("\n→ ")
+    : "each project gets its own folder here, named after it";
+  $("s-take").textContent = names.length > 1 ? "Download " + names.length + " projects"
+                                             : "Download";
+}
+$("s-base").oninput = syncStudioWhere;
+$("s-base-pick").onclick = async () => {
+  const d = await api().pick_folder();
+  if (d) { $("s-base").value = d; syncStudioWhere(); }
+};
+
+$("s-take").onclick = async () => {
+  const names = studioPicked();
+  const base = $("s-base").value.trim();
+  $("s-msg").textContent = "";
+  if (!names.length) { $("s-msg").textContent = "Tick the projects you want"; return; }
+  if (!base) { $("s-msg").textContent = "Choose where to put them"; return; }
+  const c = studioCreds, done = [], failed = [];
+  for (let i = 0; i < names.length; i++) {
+    busy(true, "Downloading " + (names.length > 1 ? (i + 1) + " of " + names.length +
+         " — " : "") + names[i] + ". The first time can take a while — keep this " +
+         "window open.");
+    try {
+      await api().add_studio_project(names[i], base, c ? c.address : null,
+                                     c ? c.user : null, c ? c.password : null);
+      done.push(names[i]);
+    } catch (e) {
+      failed.push(names[i] + " — " + clean(e));
+    }
+  }
+  busy(false);
+  if (done.length) {
+    gen++;
+    selected.clear();
+    $("s-lpass").value = "";
+    studioCreds = null;
+  }
+  if (failed.length) {
+    await ask({ title: done.length ? "Not every project was taken"
+                                   : "The projects were not taken",
+                lines: failed, ok: "OK", noCancel: true });
+  }
+  if (done.length) {
+    $("setup").classList.add("hidden");
+    await refresh();
+  }
 };
 $("s-pick").onclick = async () => {
   const d = await api().pick_folder();

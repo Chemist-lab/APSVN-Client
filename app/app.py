@@ -190,6 +190,24 @@ def project_id(url, wc):
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
 
 
+# Ім'я проєкту стає ім'ям теки: те, чого Windows у теках не терпить, — на «_»,
+# зарезервовані імена пристроїв (CON, NUL, COM1…) — з «_» у кінці.
+_BAD_IN_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_DEVICES = {"con", "prn", "aux", "nul"} | {"com%d" % i for i in range(1, 10)} | \
+    {"lpt%d" % i for i in range(1, 10)}
+
+
+def folder_name(name):
+    """Ім'я проєкту -> ім'я його теки на диску, або None, якщо з нього теки не буде."""
+    n = _BAD_IN_NAME.sub("_", str(name or "")).strip(" .")
+    if not n:
+        return None
+    stem, dot, rest = n.partition(".")
+    if stem.lower() in _DEVICES:               # NUL.txt — теж пристрій
+        n = stem + "_" + dot + rest
+    return n
+
+
 def _blank():
     return {"format": FORMAT, "projects": [], "current": None}
 
@@ -1412,6 +1430,114 @@ class Api:
 
     # стара назва — щоб не ламати наявні виклики й тести
     setup = add_project
+
+    # --- сервер студії: увійти раз і взяти проєкти ---
+    def _studio_login(self, address=None):
+        """(Where, користувач, пароль) — вхід, збережений з проєкту на цьому ж
+        сервері студії (поточний — першим). None — такого ще немає."""
+        want = srv.studio_at(address) if address else None
+        cur = self._proj()
+        for p in ([cur] if cur else []) + [x for x in self.projects if x is not cur]:
+            w = srv.studio_at(p.get("url"))
+            if not w or (want and w.api != want.api):
+                continue
+            u, pw = self._creds(p)
+            if u and pw:
+                return w, u, pw
+        return None
+
+    def studio_known(self):
+        """Для «＋»: чи вже є вхід на сервер студії — тоді пароль не питаємо."""
+        got = self._studio_login()
+        return {"address": got[0].site, "user": got[1]} if got else None
+
+    def _studio_creds(self, address, username, password):
+        if password:
+            w = srv.studio_at(address)
+            if not w:
+                raise sc.SvnError("That does not look like a server address.")
+            u = (username or "").strip()
+            if not u:
+                raise sc.SvnError("Type your user name.")
+            return w, u, password
+        got = self._studio_login(address)
+        if not got:
+            raise sc.SvnError("Sign in to the studio server first.")
+        return got
+
+    def _default_base(self):
+        """Куди класти проєкти, якщо людина ще не вибрала: туди ж, де лежать
+        уже підключені, інакше — «Projects» у домашній теці."""
+        up = [os.path.dirname(os.path.abspath(p["wc"])) for p in self.projects
+              if p.get("wc")]
+        return (max(set(up), key=up.count) if up
+                else os.path.join(os.path.expanduser("~"), "Projects"))
+
+    def studio_projects(self, address=None, username=None, password=None):
+        """Проєкти, які ця людина може взяти з сервера студії (/api/v1/repos).
+
+        Пароль дали — перевіряємо ним і НІЧОГО не зберігаємо, поки людина не
+        візьме хоч один проєкт. Не дали — вхід із уже підключеного проєкту на
+        тому ж сервері: «увійти раз».
+        """
+        w, u, pw = self._studio_creds(address, username, password)
+        try:
+            got = srv.Client(w, u, pw).get("repos")
+        except srv.ApiError as e:
+            if e.code == 401:                    # srv.AUTH — про задачі й прев'ю
+                raise sc.SvnError("That user name or password is not right.")
+            if e.code == 404:
+                raise sc.SvnError("That server does not list its projects — it is "
+                                  "not the studio server. Connect by the project's "
+                                  "address instead.")
+            raise sc.SvnError(str(e))
+        rows = []
+        for r in got.get("repos") or []:
+            name = str(r.get("name") or "")
+            if not folder_name(name):
+                continue
+            url = w.svn + urllib.parse.quote(name, safe="")
+            here = [p["wc"] for p in self.projects
+                    if (p.get("url") or "").rstrip("/") == url or
+                    (p.get("url") or "").startswith(url + "/")]
+            rows.append({"name": name, "url": url, "have": here,
+                         "archived": bool(r.get("archived")),
+                         "author": r.get("author"), "date": r.get("date")})
+        rows.sort(key=lambda x: x["name"].lower())
+        return {"address": w.site, "user": u, "projects": rows,
+                "base": self._default_base()}
+
+    def add_studio_project(self, name, base, address=None, username=None,
+                           password=None):
+        """Узяти проєкт із сервера студії — у підтеку base/<ім'я проєкту>.
+
+        Людина вибирає лише, КУДИ класти проєкти; теку проєкту робимо самі.
+        Чужого не чіпаємо: тека з таким ім'ям уже є і в ній щось своє —
+        відмова для цього проєкту (решта беруться). Копія цього ж проєкту на
+        тому місці — просто підключаємо її, нічого не качаючи заново.
+        """
+        w, u, pw = self._studio_creds(address, username, password)
+        sub = folder_name(name)
+        if not sub:
+            raise sc.SvnError("That project name cannot be a folder name.")
+        base = (base or "").strip()
+        if not base:
+            raise sc.SvnError("Choose where to put the projects.")
+        base = os.path.abspath(base)
+        here = sc.probe_dir(base)
+        if here["state"] in ("wc", "subdir", "broken"):
+            raise sc.SvnError("“%s” is inside another project. Pick a folder "
+                              "outside it — a project inside a project breaks "
+                              "the file list." % base)
+        folder = os.path.join(base, sub)
+        if os.path.isdir(folder) and os.listdir(folder) and \
+                not os.path.isdir(os.path.join(folder, ".svn")):
+            raise sc.SvnError("“%s” already exists and has other files in it — "
+                              "APSVN does not mix a project into them. Pick "
+                              "another place, or empty that folder." % folder)
+        url = w.svn + urllib.parse.quote(str(name), safe="")
+        self.add_project(url, folder, u, pw, name=str(name))
+        return {"name": str(name), "folder": folder}
 
     # --- дії ---
     def do_update(self):

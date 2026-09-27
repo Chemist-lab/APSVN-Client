@@ -192,6 +192,12 @@ TASKS.update({
 KITSU_ON = False          # чи сервер каже «kitsu: true» у списку задач
 STUDIO = {}               # налаштування студії в /api/v1/ (версія Blender'а)
 REPO_INFO = {}            # /repos/demo: порожньо — старий сервер (404); fail — збій
+REPOS = [{"name": "demo", "head": 30, "author": "andrii", "date": "2026-09-25 15:48",
+          "archived": False},
+         {"name": "Film_2026", "head": 7, "author": "taras", "date": "2026-09-27 12:00",
+          "archived": False},
+         {"name": "Old_Short", "head": 90, "author": "andrii", "date": "2025-03-01 10:00",
+          "archived": True}]
 KITSU_MOVES = {32: [{"key": "wip", "name": "Work In Progress"},
                     {"key": "wfa", "name": "Waiting For Approval"}],
                33: [{"key": "done", "name": "Done"}, {"key": "retake", "name": "Retake"},
@@ -300,6 +306,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True})
         if p == "/api/v1/processes":
             return self._send(200, {"processes": PROCESSES, "modes": ["new", "same", "none"]})
+        if p == "/api/v1/repos":
+            return self._send(200, {"repos": REPOS})
         if p in ("/api/v1/repos/demo", "/api/v1/repos/demo/"):
             if not REPO_INFO:
                 return self._send(404, {"error": "not found"})
@@ -931,6 +939,99 @@ finally:
     api._srv.clear()
     api.server_status()       # пам'ять про сервер — як до блоку: далі на неї спираються
     api.conf.pop("blender_paths", None)
+
+print("--- Api: увійти раз — проєкти зі списку, кожен у свою теку ---")
+W = srv.studio_at
+for a, want in (("svn.studio.test", ("https://svn.studio.test", "https://svn.studio.test/svn/")),
+                ("https://svn.studio.test/svn/demo/trunk", ("https://svn.studio.test",
+                                                            "https://svn.studio.test/svn/")),
+                ("https://svn.studio.test/browse/demo/tree/", ("https://svn.studio.test",
+                                                              "https://svn.studio.test/svn/")),
+                ("http://10.0.0.5:8080/tools/", ("http://10.0.0.5:8080/tools",
+                                                 "http://10.0.0.5:8080/tools/svn/")),
+                ("https://user:pw@svn.studio.test/", ("https://svn.studio.test",
+                                                      "https://svn.studio.test/svn/"))):
+    got = W(a)
+    check("адреса «%s» -> сайт і проєкти" % a, got and (got.site, got.svn) == want,
+          got and (got.site, got.svn))
+check("не адреса — None", W("ftp://x") is None and W("") is None and W("https://") is None)
+for n, want in (("Film_2026", "Film_2026"), ("CON", "CON_"), ("nul.txt", "nul_.txt"),
+                ("a:b", "a_b"), ("..", None), ("../x", "_x"), ("Проєкт", "Проєкт")):
+    check("ім'я проєкту «%s» -> тека %r" % (n, want), app.folder_name(n) == want,
+          app.folder_name(n))
+
+check("вхід зі збереженого проєкту на тому ж сервері",
+      api.studio_known() == {"address": HOST, "user": USER}, api.studio_known())
+d = api.studio_projects()
+names = [p["name"] for p in d["projects"]]
+check("проєкти сервера — за абеткою, без пароля (вхід той самий)",
+      names == ["demo", "Film_2026", "Old_Short"] and d["user"] == USER, names)
+by = {p["name"]: p for p in d["projects"]}
+check("підключений уже проєкт позначено — і де він лежить",
+      by["demo"]["have"] == [wc] and by["Film_2026"]["have"] == [], by["demo"])
+check("адреса проєкту — з адреси сервера", by["Film_2026"]["url"] == HOST + "/svn/Film_2026")
+check("архівний позначено", by["Old_Short"]["archived"] is True)
+check("куди класти за замовчуванням — поруч із уже підключеними",
+      d["base"] == os.path.dirname(os.path.abspath(wc)), d["base"])
+try:
+    api.studio_projects(HOST, USER, "wrong")
+    check("хибний пароль — відмова", False)
+except sc.SvnError as e:
+    check("хибний пароль — зрозуміла відмова", str(e) == "That user name or password "
+          "is not right.", e)
+d = api.studio_projects(HOST + "/", USER, PASSWORD)
+check("новий вхід (адреса з «/») — той самий список", len(d["projects"]) == 3)
+try:
+    api.studio_projects(HOST + "/other", USER, PASSWORD)
+    check("сервер без списку проєктів — відмова", False)
+except sc.SvnError as e:
+    check("сервер без списку проєктів — порада підключити за адресою",
+          "project's address" in str(e), e)
+
+took = []
+real_add, real_probe_dir = api.add_project, sc.probe_dir
+api.add_project = lambda url, folder, u, pw, name=None: took.append((url, folder, u, pw, name))
+try:
+    base = os.path.join(BASE, "Проєкти")
+    r = api.add_studio_project("Film_2026", base)
+    check("проєкт — у свою підтеку з його ім'ям, вхід збережений",
+          took == [(HOST + "/svn/Film_2026", os.path.join(base, "Film_2026"), USER, PASSWORD,
+                    "Film_2026")] and r["folder"] == os.path.join(base, "Film_2026"), took)
+    os.makedirs(os.path.join(base, "Old_Short", "чуже"))
+    took.clear()
+    try:
+        api.add_studio_project("Old_Short", base, HOST, USER, PASSWORD)
+        check("тека з таким ім'ям уже є й у ній своє — не змішуємо", False, took)
+    except sc.SvnError as e:
+        check("тека з таким ім'ям уже є й у ній своє — не змішуємо, і нічого не качаємо",
+              "already exists" in str(e) and took == [], e)
+    os.makedirs(os.path.join(base, "demo", ".svn"))
+    api.add_studio_project("demo", base, HOST, USER, PASSWORD)
+    check("там уже копія — підключаємо (що в ній, звірить add_project)",
+          took and took[-1][1] == os.path.join(base, "demo"), took)
+    sc.probe_dir = lambda folder: {"state": "wc"} if folder == os.path.abspath(base) \
+        else real_probe_dir(folder)
+    took.clear()
+    try:
+        api.add_studio_project("Film_2026", base)
+        check("куди класти — всередині іншого проєкту: відмова", False, took)
+    except sc.SvnError as e:
+        check("куди класти — всередині іншого проєкту: відмова", "inside another project"
+              in str(e) and took == [], e)
+    sc.probe_dir = real_probe_dir
+    for bad in ("", None):
+        try:
+            api.add_studio_project("Film_2026", bad)
+            check("не сказали куди — відмова", False)
+        except sc.SvnError as e:
+            check("не сказали куди — відмова (%r)" % (bad,), "where" in str(e), e)
+    try:
+        api.add_studio_project("..", base)
+        check("ім'я, з якого теки не буде, — відмова", False)
+    except sc.SvnError:
+        check("ім'я, з якого теки не буде, — відмова", True)
+finally:
+    api.add_project, sc.probe_dir = real_add, real_probe_dir
 
 print("--- Api: без сервера все мовчки вимикається ---")
 api2 = app.Api()

@@ -5,15 +5,42 @@
 <div id="setup" class="hidden">
   <div class="card">
     <h1 id="s-title">Connect to a project</h1>
-    <label>Project address <input id="s-url" placeholder="https://svn.your-studio.com/svn/project"></label>
-    <label>Folder on this computer <span class="row"><input id="s-dir" placeholder="D:\work\project" title="the folder on your computer where the files will live"><button id="s-pick" class="ghost">Browse…</button></span></label>
-    <label>Name for this project <input id="s-name" placeholder="optional"></label>
-    <label>User name <input id="s-user"></label>
-    <label>Password <input id="s-pass" type="password"></label>
-    <span class="row">
-      <button id="s-go" class="primary big">Connect</button>
-      <button id="s-cancel" class="ghost hidden">Cancel</button>
-    </span>
+    <!-- Увійти на сервер студії — один раз: далі APSVN сам покаже проєкти,
+         які можна взяти, і кожен покладе у свою теку. -->
+    <div id="s-login" class="s-pane">
+      <label>Studio server <input id="s-host" placeholder="svn.your-studio.com" spellcheck="false"></label>
+      <label>User name <input id="s-luser" spellcheck="false"></label>
+      <label>Password <input id="s-lpass" type="password"></label>
+      <span class="row">
+        <button id="s-list" class="primary big">Show my projects</button>
+        <button class="ghost s-cancel hidden">Cancel</button>
+      </span>
+      <button id="s-to-manual" class="linkbtn">Connect by a project's address instead</button>
+    </div>
+    <div id="s-projects" class="s-pane hidden">
+      <div class="s-who"><span id="s-who"></span>
+        <button id="s-relogin" class="linkbtn">Use another account</button></div>
+      <div id="s-list-box" class="s-list"></div>
+      <label>Where to put them <span class="row"><input id="s-base" spellcheck="false"><button id="s-base-pick" class="ghost">Browse…</button></span></label>
+      <div id="s-where" class="s-where"></div>
+      <span class="row">
+        <button id="s-take" class="primary big">Download</button>
+        <button class="ghost s-cancel hidden">Cancel</button>
+      </span>
+    </div>
+    <!-- Старий шлях — за адресою проєкту: будь-який сервер Subversion. -->
+    <div id="s-manual" class="s-pane hidden">
+      <label>Project address <input id="s-url" placeholder="https://svn.your-studio.com/svn/project"></label>
+      <label>Folder on this computer <span class="row"><input id="s-dir" placeholder="D:\work\project" title="the folder on your computer where the files will live"><button id="s-pick" class="ghost">Browse…</button></span></label>
+      <label>Name for this project <input id="s-name" placeholder="optional"></label>
+      <label>User name <input id="s-user"></label>
+      <label>Password <input id="s-pass" type="password"></label>
+      <span class="row">
+        <button id="s-go" class="primary big">Connect</button>
+        <button id="s-cancel" class="ghost s-cancel hidden">Cancel</button>
+      </span>
+      <button id="s-to-studio" class="linkbtn">Sign in to the studio server instead</button>
+    </div>
     <div id="s-msg" class="msg"></div>
   </div>
 </div>

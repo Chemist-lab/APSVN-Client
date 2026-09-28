@@ -463,13 +463,13 @@ part of the root, with the code in `Resources/app`.
 | `runtime-mac/`  | the same idea on macOS: a portable python.org framework, built by `make_runtime_mac.sh` |
 | `svn-mac/`      | a portable Subversion for macOS, built by `make_svn_mac.sh` |
 | `vendor/`       | pywebview, keyring and their dependencies |
-| `svn/`          | SlikSvn (Subversion CLI, Apache-2.0) |
+| `svn/`          | SlikSvn 1.14.5 (Subversion CLI, Apache-2.0), the VC++ runtime it needs, its licences |
 | `explorer.py`   | the Explorer: one folder at a time |
 | `finder.py`     | search: the whole project by name, commits by file, note or author |
 | `blender.py`    | which Blender opens a scene: the studio's version, found on this machine |
 | `blendthumb.py` | preview embedded in a `.blend` |
 | `imgthumb.py`   | previews for png/jpg/tga/exr |
-| `tests/`        | 841 checks without a server, up to 24 more (read-only) against the real one |
+| `tests/`        | 849 checks without a server, up to 24 more (read-only) against the real one |
 
 Settings live in `%APPDATA%\APSVN\config.json`, format 2:
 `{"format":2, "projects":[…], "current":"<id>", …mirror of the current one…}`.
@@ -556,7 +556,9 @@ behind decisions that look odd until you know why.
   answer means every network action fails for the artist. That Homebrew's svn
   really does read stdin was established on a live `svnserve` that demands a
   password, not from the help text that had just lied:
-  `tests/exp_stdin_password.py`.
+  `tests/exp_stdin_password.py`. SlikSvn 1.14.5 does not list the option in
+  its help either (checked 2026-09-28), so on Windows nothing changed with
+  the update: the same fallback, and the live checks log in fine.
 * **“You are behind” is a count of files, never a difference of revision
   numbers.** It used to be `HEAD - <working copy revision>`, and it told an
   artist to *get the latest* the moment they finished submitting themselves.
@@ -949,6 +951,28 @@ behind decisions that look odd until you know why.
   a refusal would run a plain cleanup). It takes a fraction of a second; the
   result goes to `apsvn.log`, and a toast when it freed 100 MB or more. The
   *Repair* button and the E155004 cure stay exactly as they were.
+* **The bundled svn is SlikSvn 1.14.5 — at least 1.14.4, because of
+  CVE-2024-45720.** Up to 1.14.3 svn.exe on Windows received its command line
+  in “ANSI”, and the best-fit conversion turned some Unicode characters into
+  quotes, dashes and the like: an argument `a＂ --xml` (a fullwidth quote)
+  split into `a` and an injected option `--xml` — shown on the old 1.14.2
+  itself, which printed XML. Since 1.14.4 svn splits the command line while
+  it is still UTF-16 (`wmain`), so that stays one argument;
+  `test_apsvn.py` keeps checking it, and that the bundled svn is ≥ 1.14.4.
+  The fix converts each argument to the ANSI code page afterwards, so
+  Cyrillic in argv still becomes “?” — file names keep going through a
+  `--targets` file, and the few paths that must be in argv (move, cat, copy,
+  checkout, relocate, propget) come after `--`, so that a file named
+  `-rHEAD.blend` is never read as an option. SlikSvn does not sign its
+  packages (neither 1.14.5 nor the 1.14.2 before it); the MSI was read with
+  the Windows Installer API first — its administrative sequence runs no
+  custom actions — and unpacked with `msiexec /a`, nothing installed. The
+  bundle now carries `vcruntime140.dll`, `vcruntime140_1.dll` and
+  `msvcp140.dll` from the same package: svn.exe imports them, the old bundle
+  relied on the machine having them, and a VS 2022 build with an older
+  system `msvcp140.dll` is a known crash. The working-copy format is the same
+  across 1.14.x: copies made with 1.14.2 need no upgrade, and the studio
+  server runs 1.14.2 as well.
 * **What a person may do with a task, the server says — APSVN does not
   guess.** A colleague's task opens from the name on its file, and a
   supervisor may change any task, so guessing would mean buttons that refuse
@@ -1217,7 +1241,7 @@ decision, not a gap.
 
 ### Tests
 
-Without a server — 841 checks against a temporary `file://` repository (and,
+Without a server — 849 checks against a temporary `file://` repository (and,
 for the studio server, a fake one on `127.0.0.1`); they leave nothing behind:
 
 ```bash

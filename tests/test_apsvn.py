@@ -231,6 +231,22 @@ try:
 except Exception as e:
     check("імена з мінусом", False, e)
 
+# 14. CVE-2024-45720: вбудований svn не дає підсунути ключ через «best fit».
+# До 1.14.4 svn.exe на Windows отримував командний рядок в ANSI, і повноширинна
+# лапка U+FF02 ставала справжньою " — аргумент «a＂ --xml» розпадався на «a» і
+# ключ «--xml» (перевірено на SlikSvn 1.14.2: svn видавав XML). З 1.14.4 рядок
+# ділиться на аргументи ще в UTF-16 (wmain) — і це один аргумент. Тест впаде,
+# якщо в svn/ колись повернеться стара збірка.
+if sys.platform == "win32":
+    r = subprocess.run([sc.SVN, "info", "a\uff02 --xml"], cwd=wc, capture_output=True)
+    said = (r.stdout + r.stderr).decode("utf-8", "replace")
+    check("CVE-2024-45720: лапка з «best fit» не підсовує svn ключ",
+          "<?xml" not in said, said.strip()[:120])
+    ver = subprocess.run([sc.SVN, "--version", "--quiet"], capture_output=True)
+    check("вбудований svn — 1.14.4 або новіший",
+          tuple(int(x) for x in ver.stdout.decode().split("-")[0].strip().split(".")) >= (1, 14, 4),
+          ver.stdout.decode().strip())
+
 shutil.rmtree(base, ignore_errors=True)
 print()
 print("=" * 60)

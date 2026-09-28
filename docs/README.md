@@ -482,7 +482,7 @@ it only damages the mirror. A `config.json.bak` sits next to it.
 The password is in Windows Credential Manager (service `APSVN`).
 Startup failures are logged to `%APPDATA%\APSVN\error.log`; quiet background
 work — how much the tidy-up of old file copies freed, or that it skipped a
-busy copy — to `%APPDATA%\APSVNpsvn.log` (at most a megabyte, then `.1`).
+busy copy — to `%APPDATA%\APSVN\apsvn.log` (at most a megabyte, then `.1`).
 
 Comments in the source are in Ukrainian on purpose — they carry the reasoning
 behind decisions that look odd until you know why.

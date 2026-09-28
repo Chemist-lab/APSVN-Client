@@ -199,6 +199,38 @@ try:
 except Exception as e:
     check("видалення файлу з апострофом здається", False, e)
 
+# 13. Імена, що починаються з «-»: svn не має прочитати їх як ключі.
+# Шляхи з --targets ключами не розбираються взагалі; ті, що мусять іти в argv
+# (move, cat, copy, checkout, relocate, propget), — після «--» (operands у _run).
+DASH = "-rHEAD.blend"
+DASH2 = "--force.txt"
+for n, body in ((DASH, b"\x00BLEND-dash"), (DASH2, b"text")):
+    with open(os.path.join(wc, n), "wb") as fh:
+        fh.write(body)
+try:
+    sc.add(wc, [DASH, DASH2])
+    r = sc.commit(wc, [DASH, DASH2], "імена з мінусом")
+    check("«-rHEAD.blend» і «--force.txt» додаються й здаються як файли",
+          "commit" in r.lower() and
+          DASH in sc._dec(sc._run(["list"], operands=[url], cwd=wc)).splitlines(), r)
+    sc.lock(wc, [DASH])
+    check("«-rHEAD.blend» займається", any(f["path"] == DASH and f.get("lock_mine")
+                                          for f in sc.status(wc)))
+    sc.unlock(wc, [DASH])
+    os.makedirs(os.path.join(wc, "мінус"), exist_ok=True)
+    sc.add_dir(wc, "мінус")
+    sc.move_into(wc, DASH, "мінус")
+    check("…переноситься (шлях в argv — після «--»)",
+          os.path.isfile(os.path.join(wc, "мінус", DASH)), os.listdir(os.path.join(wc, "мінус")))
+    r = sc.commit(wc, [DASH, "мінус/" + DASH, "мінус"], "переніс файл з мінусом")
+    check("…і перенос здається", "commit" in r.lower(), r)
+    log = sc.file_log(wc, "мінус/" + DASH)
+    check("…історія файлу з мінусом читається", len(log) >= 2, log)
+    got = sc._run(["cat"], operands=[url + "/" + sc._quote("мінус/" + DASH)], cwd=wc)
+    check("cat за адресою після «--»", got == b"\x00BLEND-dash", got[:20])
+except Exception as e:
+    check("імена з мінусом", False, e)
+
 shutil.rmtree(base, ignore_errors=True)
 print()
 print("=" * 60)

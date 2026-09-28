@@ -640,8 +640,15 @@ def _stream(cmd, cwd, stdin_data, dest):
 
 def _run(args, cwd=None, username=None, password=None, timeout=120,
          targets=None, message=None, _retry=True, stdout_to=None,
-         notifier=None):
+         notifier=None, operands=None):
     """Єдина точка виклику svn.exe.
+
+    operands — шляхи й адреси, що мусять іти в argv (move, cat, copy,
+    checkout, relocate, propget не приймають --targets). Вони стають ОСТАННІМИ,
+    після «--»: інакше файл «-rHEAD.blend» svn прочитав би як ключ. «--» не
+    можна просто дописати в args — свої ключі (--config-dir, --username…) ми
+    додаємо після args, і після «--» svn узяв би їх за імена файлів. Шляхи з
+    --targets ключами не розбираються взагалі (перевірено test_apsvn.py).
 
     stdout_to — шлях, у який лити stdout потоком замість буферизації. Потрібен
     для `svn cat`: .blend на кілька гігабайтів у capture_output осів би в
@@ -696,6 +703,9 @@ def _run(args, cwd=None, username=None, password=None, timeout=120,
                 # цього користувача, і наступні виклики пароля вже не несуть.
                 cmd += ["--password", password]
 
+        if operands:
+            cmd += ["--"] + [str(x) for x in operands]
+
         if stdout_to is not None:
             rc, out, err = _stream(cmd, cwd, stdin_data, stdout_to)
         elif notifier is not None:
@@ -738,7 +748,7 @@ def _run(args, cwd=None, username=None, password=None, timeout=120,
                 return _run(args, cwd=cwd, username=username, password=password,
                             timeout=timeout, targets=targets, message=message,
                             _retry=False, stdout_to=stdout_to,
-                            notifier=notifier)
+                            notifier=notifier, operands=operands)
             raise SvnError(humanize(raw), raw)
         return out
     finally:
@@ -1066,7 +1076,7 @@ def move_into(wc, rel, dest_rel):
         raise SvnError("“%s” has characters that svn on this computer cannot "
                        "handle. Rename it using Latin letters."
                        % os.path.basename(src if a is None else dst))
-    _run(["move", a + "@", b], cwd=wc, timeout=600)
+    _run(["move"], operands=[a + "@", b], cwd=wc, timeout=600)
 
 
 def add_dir(wc, rel):
@@ -1685,7 +1695,7 @@ def revision_files(wc, rev, username=None, password=None, cap=REV_FILES_CAP):
 
 def checkout(url, target, username=None, password=None, progress=None):
     os.makedirs(target, exist_ok=True)
-    out = _dec(_run(["checkout", url, "."], cwd=target,
+    out = _dec(_run(["checkout"], operands=[url, "."], cwd=target,
                     username=username, password=password, timeout=None,
                     notifier=_notifier(progress, "download", None, target) if progress else None))
     rev = _revision_of(out)
@@ -1796,7 +1806,7 @@ def is_binary(wc, path, rev=None, username=None, password=None):
     try:
         fi = file_info(wc, path, username=username, password=password)
         tgt = _safe_url(fi) + (("@%s" % rev) if rev is not None else "")
-        root = _xml(["propget", "svn:mime-type", tgt], cwd=wc,
+        root = _xml(["propget"], operands=["svn:mime-type", tgt], cwd=wc,
                     username=username, password=password, timeout=60)
     except (SvnError, ET.ParseError):
         return False
@@ -1820,7 +1830,7 @@ def _fetch(wc, url_at_rev, dest, username=None, password=None,
     """`svn cat <url>@N` потоком у файл. Peg на URL обовʼязковий."""
     stop = _watch_size(dest, total, progress) if progress else None
     try:
-        _run(["cat", url_at_rev], cwd=wc, username=username, password=password,
+        _run(["cat"], operands=[url_at_rev], cwd=wc, username=username, password=password,
              timeout=None, stdout_to=dest)
     finally:
         if stop is not None:
@@ -1941,7 +1951,7 @@ def restore_deleted(wc, repo_rel, rev, username=None, password=None):
     prefix = _repo_rel(wc, i["url"], i["root"])
     url = "%s/%s" % (i["root"].rstrip("/"),
                      _quote((prefix + "/" + rel) if prefix else rel))
-    _run(["copy", "%s@%s" % (url, rev), "."], cwd=parent_abs,
+    _run(["copy"], operands=["%s@%s" % (url, rev), "."], cwd=parent_abs,
          username=username, password=password, timeout=None)
     return os.path.basename(rel)
 
@@ -1961,7 +1971,7 @@ def relocate(wc, new_url, username=None, password=None):
     Робимо тільки на прямий дозвіл людини: адресу пропонує САМ сервер, а
     йти за чужою вказівкою наосліп не можна.
     """
-    _run(["relocate", new_url], cwd=wc, username=username, password=password,
+    _run(["relocate"], operands=[new_url], cwd=wc, username=username, password=password,
          timeout=300)
     return "The project address has been updated"
 

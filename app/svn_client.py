@@ -1349,6 +1349,46 @@ def cleanup(wc):
     return "Project repaired"
 
 
+def pristine_size(wc):
+    """Скільки займають оригінали файлів у .svn/pristine, байтів; None — теки немає."""
+    root = os.path.join(wc, ".svn", "pristine")
+    if not os.path.isdir(root):
+        return None
+    total = 0
+    for dirpath, _dirs, files in os.walk(root):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(dirpath, f))
+            except OSError:
+                pass
+    return total
+
+
+def vacuum(wc, timeout=600):
+    """Прибрати старі оригінали файлів (.svn/pristine), які вже ні до чого.
+
+    svn тримає оригінал кожної версії файлу, яку копія мала: після здачі чи
+    оновлення з'являється новий, а старий лишається лежати, доки не прийде
+    cleanup. На проєкті 56 ГіБ за п'ять робочих днів копія виросла на 45 ГіБ
+    саме ними (замір серверної сесії на тому ж SlikSvn 1.14.2, 2026-09-28).
+
+    Лише `cleanup --vacuum-pristines`: він викидає непотрібні оригінали й НЕ
+    знімає блокувань копії. Голий `cleanup` знімає їх — а якщо копією в цю
+    мить користується інша програма, svn help cleanup попереджає, що її
+    можна зламати безповоротно. Тому автоматично — ніколи голий, і без
+    _retry (той при відмові сам запустив би голий cleanup). Зайнята копія —
+    відмова E155004, нічого не зіпсовано: спробуємо наступного разу.
+    -> (було, стало) байтів; None — не вийшло (зайнято, svn відмовив).
+    """
+    before = pristine_size(wc)
+    try:
+        _run(["cleanup", "--vacuum-pristines", "."], cwd=wc, timeout=timeout,
+             _retry=False)
+    except SvnError:
+        return None
+    return before, pristine_size(wc)
+
+
 # --- поступ передачі -------------------------------------------------------
 #
 # Чесно можна показати не все, і вигадувати решту не можна:

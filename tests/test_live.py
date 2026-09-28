@@ -28,6 +28,9 @@ def check(name, cond, detail=""):
     print(("  PASS  " if cond else "  FAIL  ") + name + (" | " + str(detail) if detail else ""))
 
 
+# Живі перевірки — лише читання: автоприбирання .svn/pristine (див. test_tidy)
+# на справжній копії людини тут не запускаємо — це справа самої програми.
+app.Api.TIDY_EVERY = float("inf")
 a = app.Api()
 wc, url = a.c.get("wc"), a.c.get("url")
 if not wc or not os.path.isdir(wc) or not url:

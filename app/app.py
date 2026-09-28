@@ -55,6 +55,26 @@ import desktop  # noqa: E402
 CONF_DIR = desktop.conf_dir("APSVN")
 CONF = os.path.join(CONF_DIR, "config.json")
 LOG = os.path.join(CONF_DIR, "error.log")
+ACTIVITY = os.path.join(CONF_DIR, "apsvn.log")   # тихі фонові справи: що й коли
+
+
+def activity(line):
+    """Рядок у журнал фонових справ. Не більше мегабайта: старе — в .1."""
+    try:
+        os.makedirs(CONF_DIR, exist_ok=True)
+        if os.path.isfile(ACTIVITY) and os.path.getsize(ACTIVITY) > 1 << 20:
+            os.replace(ACTIVITY, ACTIVITY + ".1")
+        with open(ACTIVITY, "a", encoding="utf-8") as fh:
+            fh.write("%s  %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), line))
+    except OSError:
+        pass
+
+
+def human_size(n):
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return ("%d %s" % (n, unit)) if unit == "B" else ("%.1f %s" % (n, unit))
+        n /= 1024.0
 RESCUE = os.path.join(CONF_DIR, "rescue")
 # Номер версії — єдине місце на весь проєкт. Збірка бере його звідси,
 # і оновлення порівнюватиме його з тим, що лежить на сервері.
@@ -330,6 +350,8 @@ class Api:
         self._tasks = {}                   # задачі — по проєктах
         self._kitsu = {}                   # адреси в Kitsu — по проєктах
         self._index = {}                   # пошук: обхід диска — по проєктах
+        self._tidying = set()              # прибирання .svn/pristine, що вже йде
+        self._tidied = {}                  # останнє прибирання — по проєктах
         self._logv = {}                    # пошук: журнал зі шляхами — по проєктах
         self._versions = {}                # версії файлу з ключами вмісту
         self._img = srv.ImageCache()       # прев'ю з сервера
@@ -1335,7 +1357,12 @@ class Api:
                                    files=files, head=meta.get("head"),
                                    incoming=incoming[:300],
                                    incoming_n=len(incoming),
-                                   broken=None, moved_to=moved)
+                                   broken=None, moved_to=moved,
+                                   tidy=self._tidied.get(pid))
+            # Старі копії файлів — при старті й не рідше ніж раз на добу
+            # (після здачі й оновлення прибирається й так, див. _tidy_soon).
+            if time.time() - (p.get("tidied_at") or 0) > self.TIDY_EVERY:
+                self._tidy_soon(pid)
             return self._last[pid]
         finally:
             self._lock.release()
@@ -1588,10 +1615,12 @@ class Api:
         last = self._last.get(self.c.get("id")) or {}
         total = last.get("incoming_n") or None
         try:
-            return self._guard(sc.update, self._wc(), username=u, password=p,
-                               progress=self._tick, total=total)
+            out = self._guard(sc.update, self._wc(), username=u, password=p,
+                              progress=self._tick, total=total)
         finally:
             self._after_update()
+        self._tidy_soon()
+        return out
 
     def _after_update(self):
         """Після «Get latest» застаріле все, що рахувалося від старої копії.
@@ -1765,7 +1794,72 @@ class Api:
                 out += self._send_to_review(review, message, done.group(1))
             return out
 
-        return self._guard(work)
+        out = self._guard(work)
+        if sc.COMMIT_RE.search(out or ""):
+            self._tidy_soon()
+        return out
+
+    # --- прибирання старих копій файлів (.svn/pristine) ---
+    TIDY_DELAY = 3               # с: спершу хай інтерфейс оновиться після дії
+    TIDY_EVERY = 20 * 3600       # с: і не рідше ніж раз на добу (при старті теж)
+
+    def _tidy_soon(self, pid=None, wait=False):
+        """Прибрати старі копії файлів проєкту — у фоні, коли APSVN вільний.
+
+        Після здачі й оновлення (саме тоді старі оригінали й з'являються), при
+        старті та раз на добу. Одне прибирання на проєкт за раз.
+        """
+        p = self._proj(pid)
+        if not p or p["id"] in self._tidying:
+            return
+        self._tidying.add(p["id"])
+
+        def run():
+            try:
+                if self.TIDY_DELAY:
+                    time.sleep(self.TIDY_DELAY)
+                self._tidy(p)
+            except Exception:
+                pass                      # фонове прибирання ніколи не валить програму
+            finally:
+                self._tidying.discard(p["id"])
+
+        if wait:
+            run()
+        else:
+            threading.Thread(target=run, daemon=True, name="apsvn-tidy").start()
+
+    def _tidy(self, p):
+        """Одне прибирання під замком дій — як будь-яке коротке читання.
+
+        Іде передача (busy) — не чекаємо й не пхаємося: наступного разу.
+        Коротке читання (фонова звірка) — чекаємо, воно секундне. Замок
+        тримаємо, щоб ніяка наша ж дія не почалась посеред прибирання.
+        """
+        wc = p.get("wc")
+        if not wc or not os.path.isdir(wc):
+            return None
+        try:
+            self._take("busy", 30)
+        except sc.SvnError:
+            return None
+        try:
+            got = sc.vacuum(wc)
+        finally:
+            self._lock.release()
+        p["tidied_at"] = time.time()
+        save_conf(self.conf)
+        if not got or got[0] is None:
+            activity("tidy %s: skipped — the copy was busy" % (p.get("name") or wc))
+            return None
+        before, after = got[0], got[1] or 0
+        freed = max(0, before - after)
+        self._tidied[p["id"]] = {"at": time.time(), "freed": freed,
+                                 "before": before, "after": after}
+        activity("tidy %s: .svn/pristine %s -> %s, freed %s" % (
+            p.get("name") or wc, human_size(before), human_size(after),
+            human_size(freed)))
+        return got
 
     def _send_to_review(self, ids, message, rev):
         """Після здачі — задачі на перевірку. Ніколи не валить саму здачу.

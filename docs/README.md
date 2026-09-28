@@ -469,7 +469,7 @@ part of the root, with the code in `Resources/app`.
 | `blender.py`    | which Blender opens a scene: the studio's version, found on this machine |
 | `blendthumb.py` | preview embedded in a `.blend` |
 | `imgthumb.py`   | previews for png/jpg/tga/exr |
-| `tests/`        | 823 checks without a server, up to 24 more (read-only) against the real one |
+| `tests/`        | 841 checks without a server, up to 24 more (read-only) against the real one |
 
 Settings live in `%APPDATA%\APSVN\config.json`, format 2:
 `{"format":2, "projects":[…], "current":"<id>", …mirror of the current one…}`.
@@ -480,7 +480,9 @@ that knows nothing about `projects` would wipe the whole list. With the mirror
 it only damages the mirror. A `config.json.bak` sits next to it.
 
 The password is in Windows Credential Manager (service `APSVN`).
-Startup failures are logged to `%APPDATA%\APSVN\error.log`.
+Startup failures are logged to `%APPDATA%\APSVN\error.log`; quiet background
+work — how much the tidy-up of old file copies freed, or that it skipped a
+busy copy — to `%APPDATA%\APSVNpsvn.log` (at most a megabyte, then `.1`).
 
 Comments in the source are in Ukrainian on purpose — they carry the reasoning
 behind decisions that look odd until you know why.
@@ -930,6 +932,23 @@ behind decisions that look odd until you know why.
   the whole frame from one colour, while a light one only colours the top
   bar. The title bar: `DwmSetWindowAttribute` (caption and text colour),
   Windows 11 only — elsewhere it stays the system's.
+* **Old copies of files are tidied up by themselves — with
+  `--vacuum-pristines`, never a plain `cleanup`.** svn keeps the original of
+  every version a copy has had in `.svn/pristine`; after a submit or an
+  update the new one arrives and the old one stays until a cleanup. The
+  server session measured it on the same SlikSvn 1.14.2 (2026-09-28): a
+  56 GiB project grew from 112.5 to 157.5 GiB in five working days — 45 GiB
+  of old copies, exactly what had changed. A plain `svn cleanup` would clear
+  them too, but it also removes the copy's locks, and `svn help cleanup`
+  warns that a copy another program is using at that moment can be damaged
+  beyond repair. `--vacuum-pristines` only drops unreferenced originals and
+  touches no locks: a busy copy is refused (E155004) with nothing broken.
+  APSVN runs it after a successful submit or *Get latest*, at start and at
+  least once a day — in the background, under the same action lock as any
+  short read, never during a transfer, and without `_run`'s retry (which on
+  a refusal would run a plain cleanup). It takes a fraction of a second; the
+  result goes to `apsvn.log`, and a toast when it freed 100 MB or more. The
+  *Repair* button and the E155004 cure stay exactly as they were.
 * **What a person may do with a task, the server says — APSVN does not
   guess.** A colleague's task opens from the name on its file, and a
   supervisor may change any task, so guessing would mean buttons that refuse
@@ -1198,7 +1217,7 @@ decision, not a gap.
 
 ### Tests
 
-Without a server — 823 checks against a temporary `file://` repository (and,
+Without a server — 841 checks against a temporary `file://` repository (and,
 for the studio server, a fake one on `127.0.0.1`); they leave nothing behind:
 
 ```bash
@@ -1238,6 +1257,11 @@ runtime\python.exe tests\test_apsvn.py
 * `test_blender.py` — versions as the studio, the installer and Blender
   write them, finding the one needed (installed, shown by hand, missing),
   starting it detached through the launcher, and what this machine has;
+* `test_tidy.py` — `.svn/pristine` growing with every submit of a big file
+  and back to the size of the files after the tidy-up; a copy locked by
+  “another program” refused quietly with its lock intact; never a plain
+  `cleanup`; tidied after a submit, an update, at start and daily, never
+  during a transfer;
 * `test_refresh.py` — *Get latest* pressed while the background check holds
   the lock waits and succeeds, a second action during a real transfer is
   still refused at once, reading history is not a transfer, and an update

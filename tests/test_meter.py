@@ -60,13 +60,16 @@ class Sink:
     def _one(self, c):
         n = 0
         buf = bytearray(1 << 20)
-        while True:
-            k = c.recv_into(buf)
-            if not k:
-                break
-            n += k
-        self.got.append(n)
-        c.sendall(b"OK %d" % n)
+        try:
+            while True:
+                k = c.recv_into(buf)
+                if not k:
+                    break
+                n += k
+            self.got.append(n)
+            c.sendall(b"OK %d" % n)
+        except OSError:
+            pass            # тунель обірвали навмисно (перевірка зупинки) — кінець
         c.close()
 
 

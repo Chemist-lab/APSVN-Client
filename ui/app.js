@@ -220,6 +220,14 @@ function ask(o) {
    заголовок («These files are assigned to someone else»), рядки з відступом
    — шляхи й люди, решта — порада. */
 function fail(e, ms) {
+  // Історію на сервері відкотили — не тост, а пропозиція вилікувати копію
+  if (e && e.name === "RolledBackError") {
+    return ask({
+      title: "The server’s history was rolled back",
+      lines: [clean(e)],
+      ok: "Repair this copy",
+    }).then(a => { if (a.ok) repairRollback(); });
+  }
   if (e && e.name === "RuleError") {
     const lines = clean(e).split("\n");
     const title = (lines.shift() || "The server did not allow this")
@@ -470,6 +478,7 @@ async function _refresh(mine) {
   $("h-warn").textContent = s.warn || "";
   $("h-warn").classList.toggle("hidden", !s.warn);
   renderMoved(s);
+  renderRolled(s);
 
   if (s.broken) { showBroken(s); return; }
   showView(view);
@@ -512,6 +521,65 @@ function renderMoved(s) {
   });
   box.append(t, u, b);
   box.classList.remove("hidden");
+}
+
+// Історію на сервері відкотили, а копія має новіші ревізії (svn E160006).
+// Робота ціла — пояснюємо й пропонуємо лікування замість сирої помилки.
+function renderRolled(s) {
+  const box = $("h-rolled");
+  if (!s.rolled_back) { box.classList.add("hidden"); box._on = false; return; }
+  if (box._on) return;                   // не перебудовуємо щодесять секунд
+  box._on = true;
+  box.innerHTML = "";
+  const t = document.createElement("div");
+  t.textContent = "The server’s history was rolled back: this copy has commits " +
+                  "the server no longer has. Your files are safe.";
+  box.append(t, mini("Repair this copy", "", repairRollback));
+  box.classList.remove("hidden");
+}
+
+async function repairRollback() {
+  busy(true, "Checking what needs repairing…");
+  let plan = null, failed = null;
+  try { plan = await api().rollback_plan(); } catch (e) { failed = e; }
+  busy(false);
+  if (failed) return toast(clean(failed), 9000);
+  if (!plan.full && !plan.nodes.length)
+    return toast("This copy is in step with the server — nothing to repair.");
+  const gone = plan.nodes.length - (plan.on_server || 0);
+  const lines = [
+    "The server’s history now ends at commit " + plan.head + ", but this copy " +
+    "has files from commit " + plan.newest + " — those commits were rolled " +
+    "back on the server.",
+    "Nothing on your disk is overwritten. Every file stays exactly as it is; " +
+    "whatever differs from the server shows in Changes — submit it again or " +
+    "discard it.",
+  ];
+  if (plan.full)
+    lines.push({ text: "The whole project has to be downloaded again — it can " +
+                       "take a while. Your files stay where they are.", warn: true });
+  else {
+    if (plan.on_server)
+      lines.push("APSVN downloads the server’s version of " +
+                 (plan.on_server === 1 ? "1 item" : plan.on_server + " items") +
+                 (plan.bytes ? " (" + fmtSize(plan.bytes) + ")" : "") + ".");
+    if (gone > 0)
+      lines.push(gone === 1
+        ? "1 item is not on the server any more — it stays on your disk and " +
+          "shows as new."
+        : gone + " items are not on the server any more — they stay on your " +
+          "disk and show as new.");
+  }
+  const facts = plan.full ? [] : plan.nodes.slice(0, 6).map(r => [
+    r.split("/").pop(), r.includes("/") ? r.slice(0, r.lastIndexOf("/")) : ""]);
+  if (!plan.full && plan.nodes.length > 6)
+    facts.push(["…", "and " + (plan.nodes.length - 6) + " more"]);
+  const a = await ask({ title: "Repair this copy?", lines: lines, facts: facts,
+                        ok: "Repair" });
+  if (!a.ok) return;
+  act("do_repair_rollback", [],
+      plan.full ? "Downloading the project again…" : "Repairing…",
+      refreshEverything);
 }
 
 function renderProjects() {
@@ -2689,6 +2757,7 @@ $("b-remote").onclick = async () => {
   try { await refreshEverything(); } finally { busy(false); }
 };
 $("b-fix").onclick = () => {
+  if (st && st.rolled_back) return repairRollback();
   ask({
     title: "Repair the project?",
     lines: ["Use this if APSVN was closed in the middle of a transfer and now " +

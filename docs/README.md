@@ -379,6 +379,21 @@ An administrator took your lock away while you were working. Press *get latest*
 and lock the file again **before** carrying on — otherwise you will not be able
 to submit.
 
+### If it says “the server’s history was rolled back”
+
+An administrator returned the server to an older commit (from a backup, or to
+throw away test submits), and this copy already had something newer. svn then
+refuses everything with `E160006: No such reported revision`. Your files are
+fine: they are on your disk. Press **Repair this copy** in the yellow strip, or
+**🛠 Repair this project** in the menu. APSVN shows what it will do and asks
+first. Nothing on disk is overwritten: whatever differs from the server after
+the rollback shows in Changes — submit it again or discard it. Files the
+server no longer has at all stay on your disk as new files.
+
+To undo a commit, use **⟲ Bring back this version** in the history instead of
+rolling the server back. It makes a new commit with the older content, so no
+copy anywhere breaks.
+
 ## Giving APSVN to somebody else
 
 Run `build\package.ps1` — it puts `APSVN-<version>.zip` next to the folder (about 20 MB
@@ -470,7 +485,7 @@ part of the root, with the code in `Resources/app`.
 | `blender.py`    | which Blender opens a scene: the studio's version, found on this machine |
 | `blendthumb.py` | preview embedded in a `.blend` |
 | `imgthumb.py`   | previews for png/jpg/tga/exr |
-| `tests/`        | 912 checks without a server, up to 26 more (read-only) against the real one |
+| `tests/`        | 953 checks without a server, up to 26 more (read-only) against the real one |
 
 Settings live in `%APPDATA%\APSVN\config.json`, format 2:
 `{"format":2, "projects":[…], "current":"<id>", …mirror of the current one…}`.
@@ -1194,6 +1209,52 @@ behind decisions that look odd until you know why.
   started), the submit is retried directly and that goes to `apsvn.log`; once
   the tunnel did reach the server, an error is a real one and is reported,
   never retried.
+* **A rolled-back server is repaired node by node, not by a fresh copy.**
+  2026-10-03: eight test submits (r29–r36) were removed from the server, and
+  every update of the copy failed with `E160006: No such reported revision
+  '36'`. svn's own advice is a new checkout, which means the whole project
+  again. Only the nodes newer than the server need it, though, and those are
+  repaired in place (`svn_client.repair_rollback`, `tests/test_rollback.py`):
+  1. the file's content is set aside with a hard link (instant, no space);
+  2. the node is dropped from the copy, locally (`update --set-depth exclude`);
+  3. it comes back from the server as it is now (`--set-depth infinity --force`);
+  4. the content goes back on top, and the file shows in Changes.
+
+  Each step hides a trap found by experiment:
+  * `exclude` refuses a locally changed file, and the message is misleading:
+    *“is not a committed directory”*. A changed file is therefore moved aside
+    and `svn revert` puts svn's copy in its place first. A link would share
+    the content with that copy.
+  * `svn update` takes no `--targets`, so paths go on the command line, where
+    Cyrillic does not survive on an English Windows. An existing file gets its
+    8.3 alias. A node that is already excluded has no alias, so an empty
+    placeholder is put there first. Several such aliases in one call make svn
+    mistake one folder written two ways (*“is not a committed directory”*
+    again), so every node gets its own call.
+  * The content is set aside *next to* the project folder, not in
+    `.svn/tmp`: `svn cleanup` empties that, and `_run` may start one by
+    itself.
+  * A failed *Get latest* before the repair leaves folders marked incomplete,
+    and the repair finishes them (`update --depth empty`).
+  * What is being repaired is written to `.svn/apsvn-rollback-repair.json`
+    first. Closing APSVN in the middle of a download keeps the yellow strip,
+    and the next **Repair** finishes the job; content still set aside is put
+    back first.
+
+  A file that was deleted by hand comes back as the server has it. A file the
+  server no longer has stays as a new one. Locks the copy held are taken back:
+  your own lock with `--force`, a nobody's lock normally, someone else's never.
+  The whole copy is downloaded again (`.svn` moved aside, `checkout --force`;
+  the files on disk stay as they are) only when it cannot be done node by
+  node:
+  * the copy's root itself is newer than the server — everyone who pressed
+    *Get latest* in time;
+  * an unfinished svn action (added, deleted, conflict, changed properties)
+    sits on those nodes;
+  * the volume has no 8.3 names at all.
+
+  The old `.svn` is set aside outside the project too, so an interrupted
+  download never leaves a ten-gigabyte folder that could be submitted.
 
 ### Updating itself
 
@@ -1372,7 +1433,21 @@ runtime\python.exe tests\test_apsvn.py
   after the end of writing, nowhere but the project's server, several tunnels
   at once, stopping; percent, speed and remaining time from it; https only;
   a submit that did not reach the server through it goes directly, one that
-  did is never retried;
+  did is never retried; the bar follows what svn has written, the network
+  line shows what went up;
+* `test_rollback.py` — a server rolled back to an older commit (dump, new
+  repository, same UUID). It checks:
+  * the error is recognised and the plan names only the nodes newer than the
+    server;
+  * repairing them leaves every byte on disk as it was: a changed and locked
+    Cyrillic-named scene, files that are new on the server side, an untouched
+    texture;
+  * the lock is taken back, and update and submit work again;
+  * a file deleted by hand comes back from the server;
+  * a copy whose root is newer is downloaded again, and so is one with a
+    pending add;
+  * an interrupted repair keeps the content and finishes on the next try;
+  * the yellow strip, the repair and the log line work in the app;
 * `test_refresh.py` — *Get latest* pressed while the background check holds
   the lock waits and succeeds, a second action during a real transfer is
   still refused at once, reading history is not a transfer, and an update

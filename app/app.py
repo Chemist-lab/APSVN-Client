@@ -1340,10 +1340,18 @@ class Api:
                 return dict(self._last.get(pid) or base, warn=str(e))
             meta = {}
             moved = None
+            rolled = False
             try:
                 files = sc.status(p["wc"], remote=bool(remote), username=u,
                                   password=pw, me=u, meta=meta)
                 warn = None
+                # лікування перервали — смуга лишається, доки не довершимо
+                rolled = sc.rollback_pending(p["wc"])
+            except sc.RolledBackError:
+                # історію на сервері відкотили: замість сирого E160006 — смуга
+                # з поясненням і кнопкою лікування (див. do_repair_rollback)
+                files = (self._last.get(pid) or {}).get("files", [])
+                warn, rolled = None, True
             except sc.SvnError as e:
                 files = (self._last.get(pid) or {}).get("files", [])
                 warn = str(e)
@@ -1364,6 +1372,7 @@ class Api:
                                    incoming=incoming[:300],
                                    incoming_n=len(incoming),
                                    broken=None, moved_to=moved,
+                                   rolled_back=rolled,
                                    tidy=self._tidied.get(pid))
             # Старі копії файлів — при старті й не рідше ніж раз на добу
             # (після здачі й оновлення прибирається й так, див. _tidy_soon).
@@ -2573,6 +2582,56 @@ class Api:
 
     def do_cleanup(self):
         return self._guard(sc.cleanup, self._wc())
+
+    # --- відкіт історії на сервері (див. sc.RolledBackError) ---
+    def rollback_plan(self):
+        """Що лікуватиме «Repair this copy» — для вікна згоди: скільки
+        файлів, скільки качати, чи доведеться перекачати копію цілком."""
+        wc, (u, p) = self._wc(), self._creds()
+        return self._guard(sc.rollback_plan, wc, username=u, password=p)
+
+    def do_repair_rollback(self):
+        """Вилікувати копію після відкоту історії. Жоден файл на диску не
+        змінюється: де він відрізняється від сервера — стає зміною."""
+        wc, (u, p) = self._wc(), self._creds()
+
+        def work():
+            r = sc.repair_rollback(wc, username=u, password=p,
+                                   progress=self._tick, me=u)
+            plan = r["plan"]
+            if not (plan["full"] or plan["nodes"]):
+                return ("This copy is in step with the server — there was "
+                        "nothing to repair.")
+            activity("repair after rollback %s: server at r%s, copy had r%s; "
+                     "%s; kept %d file(s)%s%s" % (
+                         (self._proj() or {}).get("name") or "?", plan["head"],
+                         plan["newest"], "downloaded again" if plan["full"]
+                         else "fixed " + ", ".join(plan["nodes"][:5]),
+                         r["kept"],
+                         "; locks not taken back: " + ", ".join(r["lost_locks"])
+                         if r["lost_locks"] else "",
+                         "; LEFT IN RESCUE: " + ", ".join(r["left"])
+                         if r["left"] else ""))
+            out = ("Repaired — the project was downloaded again. Your files "
+                   "stayed exactly as they were" if plan["full"] else
+                   "Repaired. %s exactly as %s" % (
+                       "1 file stayed" if r["kept"] == 1
+                       else "%d files stayed" % r["kept"],
+                       "it was" if r["kept"] == 1 else "they were"))
+            out += ("; whatever differs from commit %s is in Changes — "
+                    "submit it again or discard it." % plan["head"])
+            if r["lost_locks"]:
+                out += (" Lock again before you keep editing: "
+                        + ", ".join(os.path.basename(x) for x in r["lost_locks"])
+                        + ".")
+            if r["left"]:
+                out += (" Some files could not be put back — they are safe in "
+                        + os.path.dirname(r["left"][0]) + ".")
+            return out
+
+        out = self._guard(work)
+        self._tidy_soon()                 # оригінали відкочених версій — геть
+        return out
 
     def revision_files(self, rev):
         """Список того, що змінилося в коміті — для правої панелі History."""

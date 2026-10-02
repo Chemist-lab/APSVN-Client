@@ -21,6 +21,7 @@
 """
 import ctypes
 import datetime
+import json
 import locale
 import math
 import os
@@ -162,6 +163,18 @@ class RuleError(SvnError):
     """
 
 
+class RolledBackError(SvnError):
+    """Історію на сервері відкотили: копія має ревізії, яких там уже немає.
+
+    svn каже серверу «у мене r36», а сервер після відкоту закінчується на r28
+    — і кожне оновлення чи здача падає з E160006 «No such reported revision».
+    Робота при цьому ціла: файли лежать на диску. Лікує repair_rollback().
+
+    Окремий клас — як RuleError: інтерфейс замість сирої помилки пропонує
+    саме лікування.
+    """
+
+
 # --- кодування -------------------------------------------------------------
 def _acp():
     """Кодова сторінка, у якій svn.exe читає argv.
@@ -249,6 +262,11 @@ _HUMAN = [
      "The server did not answer properly. Nothing was lost — your changes "
      "are still here. Try again in a minute; if it keeps happening, tell "
      "your admin."),
+    # Відкіт історії на сервері (див. RolledBackError). Без «reported»
+    # повідомлення буває на file:// і на запитах конкретної ревізії.
+    (r"E160006[^\n]*No such (?:reported )?revision",
+     "The server’s history was rolled back: this copy has commits the server "
+     "no longer has. Your files are safe — click “Repair this copy”."),
     (r"E155000", "This folder already holds a different project."),
     # «не під версійним контролем» — окремо від «теку теж треба здати»:
     # порада тут інша, і сира англійська фраза сюди просочувалась
@@ -784,6 +802,8 @@ def _run(args, cwd=None, username=None, password=None, timeout=120,
                             timeout=timeout, targets=targets, message=message,
                             _retry=False, stdout_to=stdout_to,
                             notifier=notifier, operands=operands, extra=extra)
+            if _ROLLED_BACK.search(raw):
+                raise RolledBackError(humanize(raw), raw)
             raise SvnError(humanize(raw), raw)
         return out
     finally:
@@ -792,6 +812,9 @@ def _run(args, cwd=None, username=None, password=None, timeout=120,
                 os.unlink(f)
             except OSError:
                 pass
+
+
+_ROLLED_BACK = re.compile(r"E160006[^\n]*No such (?:reported )?revision")
 
 
 def _xml(args, **kw):
@@ -2129,6 +2152,444 @@ def relocate(wc, new_url, username=None, password=None):
     _run(["relocate"], operands=[new_url], cwd=wc, username=username, password=password,
          timeout=300)
     return "The project address has been updated"
+
+
+# --- відкіт історії на сервері ---------------------------------------------
+# Адміністратор може повернути сховище до старішої ревізії (бекап, dump/load).
+# Тоді копія, що вже мала новіші ревізії, ламається: svn звітує серверу про
+# вузол r36, а сервер закінчується на r28 — E160006 на кожному оновленні й
+# здачі. Стандартна порада svn — нова копія. Але робота людини лежить на
+# диску, а нова копія — це весь проєкт заново, тож лікуємо точково: лише
+# вузли, новіші за сервер. Перевірено дослідом (tests/test_rollback.py
+# повторює його): вузол виключається з копії локально (--set-depth exclude),
+# повертається з сервера вже в його останньому стані, а вміст з диска лягає
+# назад — і стає звичайною зміною, яку можна здати знову або скасувати.
+#
+# exclude стирає незмінений файл з диска, тож перед ним вміст береться
+# жорстким посиланням: на тому самому диску це мить і нуль байтів. Посилання
+# лежать ПОРУЧ із текою проєкту, а не в .svn/tmp: svn cleanup ту теку
+# вичищає, а він може запуститись посеред лікування сам (див. _run).
+#
+# Цілком перекачувати доводиться, коли новіший за сервер сам корінь копії
+# (так буде в кожного, хто встиг зробити Get latest) або коли на цих вузлах
+# висить незавершена дія svn (додано, видалено, конфлікт): частинами таке не
+# лікується. Файли на диску лишаються й тоді — checkout --force їх не чіпає.
+
+def server_head(wc, username=None, password=None):
+    """Остання ревізія на сервері (а не в копії)."""
+    out = _dec(_run(["info", "--show-item", "revision", "-r", "HEAD"],
+                    operands=[info(wc)["url"]], cwd=wc, username=username,
+                    password=password, timeout=60)).strip()
+    if not out.isdigit():
+        raise SvnError("The server did not say which commit is the latest.", out)
+    return int(out)
+
+
+# Лікування почалось і не скінчилось (APSVN закрили посеред завантаження):
+# вузли вже виключено з копії, а вміст, можливо, ще в теці порятунку. Що саме
+# — пишемо сюди перед першим кроком, щоб наступне «Repair» продовжило. svn
+# чужих файлів у корені .svn не чіпає (cleanup чистить лише .svn/tmp).
+_PENDING = "apsvn-rollback-repair.json"
+
+
+def _pending(wc):
+    try:
+        with open(os.path.join(wc, ".svn", _PENDING), encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def _set_pending(wc, data):
+    path = os.path.join(wc, ".svn", _PENDING)
+    if data is None:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    else:
+        _write_atomic(path, json.dumps(data, ensure_ascii=False))
+
+
+def rollback_pending(wc):
+    """Чи висить незавершене лікування — тоді смуга лишається, доки не довершимо."""
+    return os.path.isfile(os.path.join(wc, ".svn", _PENDING))
+
+
+def _top(rels):
+    """Лише найвищі шляхи: нащадків забирає предок."""
+    out = []
+    for rel in sorted(set(rels)):
+        if not any(rel.startswith(n + "/") for n in out):
+            out.append(rel)
+    return out
+
+
+def rollback_plan(wc, username=None, password=None):
+    """Що лікувати після відкоту історії (див. RolledBackError).
+
+    {"head": остання ревізія сервера, "newest": найновіша в копії,
+     "nodes": найвищі вузли, які лікуємо (разом із недолікованими минулого
+     разу), "exclude": ті з них, що ще стоять у копії на неіснуючій ревізії,
+     "files": скільки файлів у них на диску, "locks": файли з нашим локом,
+     "full": чи перекачувати копію цілком, "bytes": скільки качати}.
+    nodes порожній і full — False: лікувати нічого.
+    """
+    head = server_head(wc, username, password)
+    root = _xml(["info", "-R", "."], cwd=wc, timeout=None)
+    ahead, locks, pending, kinds = [], [], False, {}
+    entries = root.findall("entry")
+    for e in entries:
+        rev = e.get("revision") or ""
+        if not (rev.isdigit() and int(rev) > head):
+            continue
+        # уже виключений (лікування перервали) серверу звітує ревізією
+        # батьківської теки, тож не заважає; довершить його _pending
+        if e.findtext("wc-info/depth") == "exclude":
+            continue
+        rel = _rel(e.get("path"))
+        ahead.append((rel, int(rev)))
+        kinds[rel] = e.get("kind") or "file"
+        if e.find("lock/token") is not None:
+            locks.append(rel)
+    left = _pending(wc) or {}
+    exclude = _top(r for r, _ in ahead if r not in (".", ""))
+
+    def under(r):
+        return any(r == n or r.startswith(n + "/") for n in exclude)
+
+    # незавершена дія svn (додано, видалено, конфлікт) будь-де під цими
+    # вузлами — у доданого своя ревізія 0, тож дивимось на все під ними
+    for e in entries:
+        rel = _rel(e.get("path"))
+        if under(rel) and (
+                (e.findtext("wc-info/schedule") or "normal") != "normal"
+                or e.find("conflict") is not None
+                or e.find("tree-conflict") is not None):
+            pending = True
+    # Змінені файли exclude не бере (E155010 «is not a committed directory»
+    # — оманливо, але саме про локальні зміни): їх repair_rollback відкладає
+    # переносом і повертає svn revert. Змінені властивості так не врятуєш —
+    # тоді цілком.
+    modified = []
+    if exclude:
+        for e in _xml(["status", "."], cwd=wc, timeout=None).iter("entry"):
+            rel, ws = _rel(e.get("path")), e.find("wc-status")
+            if ws is None or not under(rel):
+                continue
+            if ws.get("props") == "modified":
+                pending = True
+            if ws.get("item") == "modified":
+                modified.append(rel)
+    full = pending or any(rel in (".", "") for rel, _ in ahead)
+    nodes = _top(exclude + list(left.get("nodes") or []))
+    locks = sorted(set(locks) | set(left.get("locks") or []))
+    files = 0
+    for rel in nodes:
+        p = os.path.join(wc, rel.replace("/", os.sep))
+        files += 1 if os.path.isfile(p) else sum(
+            len(ns) for _, _, ns in os.walk(p))
+    newest = max([r for _, r in ahead] + [left.get("newest") or 0]) or None
+    kinds.update(left.get("kinds") or {})
+    out = {"head": head, "newest": newest,
+           "nodes": [] if full else nodes, "exclude": [] if full else exclude,
+           "kinds": {r: kinds.get(r, "file") for r in nodes},
+           "modified": [] if full else modified,
+           "files": files, "locks": locks, "full": bool(ahead) and full,
+           "bytes": None}
+    out["on_server"] = 0
+    if out["nodes"]:
+        out["bytes"], out["on_server"] = _server_bytes(wc, nodes, username, password)
+    return out
+
+
+def _server_bytes(wc, nodes, username=None, password=None):
+    """Скільки важать ці вузли на сервері зараз — те, що доведеться качати, —
+    і скільки з них там узагалі є: (байти, вузлів). Решту додали відкочені
+    здачі, і в копії вони стануть новими файлами."""
+    i = info(wc)
+    # url копії svn віддає вже закодованим — розкодувати, інакше %D0 стане %25D0
+    repo_rel = urllib.parse.unquote(_repo_rel(wc, i["url"], i["root"]))
+    total = there = 0
+    for rel in nodes:
+        url = "%s/%s@HEAD" % (i["root"].rstrip("/"), _quote(
+            (repo_rel + "/" + rel) if repo_rel else rel))
+        try:
+            out = _dec(_run(["list", "-v", "-R"], operands=[url], cwd=wc,
+                            username=username, password=password, timeout=120))
+        except SvnError:
+            continue                    # на сервері цього вже немає — качати нічого
+        there += 1
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) > 3 and parts[2].isdigit():
+                total += int(parts[2])
+    return total, there
+
+
+def _argv_rel(wc, rel):
+    """Шлях для argv (update не бере --targets): як є, якщо влазить у кодову
+    сторінку svn; інакше 8.3-псевдонім — але він є лише в наявного на диску
+    (див. move_into). None — ніяк. «@» у кінці — щоб «render@2x.png» не
+    розбиралось як peg-ревізія."""
+    if _fits(rel, _acp()):
+        return rel + "@"
+    sp = _short(os.path.join(wc, rel.replace("/", os.sep)))
+    return sp + "@" if sp and _fits(sp, _acp()) else None
+
+
+def _versioned(wc, full):
+    try:
+        e = _xml(["info"], cwd=wc, targets=[os.path.relpath(full, wc)],
+                 timeout=60).find("entry")
+        return e is not None
+    except SvnError:
+        return False
+
+
+def _rmtree(path):
+    """Стерти теку разом із read-only файлами (.svn їх повна)."""
+    def writable(fn, p, _exc):
+        try:
+            os.chmod(p, 0o666)
+            fn(p)
+        except OSError:
+            pass
+    shutil.rmtree(path, onexc=writable)
+
+
+def _rescue_dir(wc):
+    """Тека для вмісту на час лікування: поруч із проєктом, на тому ж диску
+    (жорсткі посилання між дисками не працюють)."""
+    name = ".apsvn-rescue-%s-%s" % (os.path.basename(os.path.normpath(wc)),
+                                    time.strftime("%Y%m%d-%H%M%S"))
+    for parent in (os.path.dirname(os.path.normpath(wc)), wc):
+        d = os.path.join(parent, name)
+        try:
+            os.makedirs(d)
+            return d
+        except OSError:
+            continue
+    raise SvnError("Could not make room to keep your files safe during the "
+                   "repair. Nothing was changed.")
+
+
+def _keep(src, rescue, n, move=False):
+    """Відкласти файл: жорстке посилання (мить), а де не вийде — копія.
+    move — перенести (змінений файл, на місце якого svn поверне свою копію:
+    посилання ділило б із нею той самий вміст)."""
+    dst = os.path.join(rescue, "%06d-%s" % (n, os.path.basename(src)))
+    if move:
+        try:
+            os.replace(src, dst)
+        except OSError:
+            shutil.move(src, dst)
+        return dst
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
+    return dst
+
+
+def _put_back(saved):
+    """Повернути відкладене на місце. Лише вперед: на місці може бути версія
+    з сервера (вона в .svn уже є), а відкладене — робота людини."""
+    left = []
+    for orig, kept in saved:
+        try:
+            os.makedirs(os.path.dirname(orig), exist_ok=True)
+            if os.path.exists(orig):
+                os.chmod(orig, 0o666)       # svn:needs-lock робить файл read-only
+            try:
+                os.replace(kept, orig)
+            except OSError:
+                shutil.move(kept, orig)
+        except OSError:
+            left.append(kept)
+    return left
+
+
+def _relock(wc, paths, username=None, password=None, me=None):
+    """Повернути локи, що трималися до лікування (токени вона стирає).
+
+    Свій лок на сервері, але без токена в копії, бере лише --force; чужий
+    так не чіпаємо ніколи — лише власний чи нічий."""
+    lost = []
+    for rel in paths:
+        try:
+            e = _xml(["info", "-r", "HEAD"], cwd=wc, targets=[rel],
+                     username=username, password=password,
+                     timeout=120).find("entry")
+        except SvnError:
+            lost.append(rel)            # на сервері файла вже немає — і лока теж
+            continue
+        owner = e.findtext("lock/owner") if e is not None else None
+        if owner and me and owner != me:
+            lost.append(rel)
+            continue
+        try:
+            _run(["lock"] + (["--force"] if owner else []), cwd=wc, targets=[rel],
+                 message="APSVN", username=username, password=password,
+                 timeout=300)
+        except SvnError:
+            lost.append(rel)
+    return lost
+
+
+def repair_rollback(wc, username=None, password=None, progress=None, me=None,
+                    plan=None):
+    """Вилікувати копію після відкоту історії, не зачепивши жодного файлу.
+
+    Повертає {"plan": …, "kept": скільки файлів лишились як були, "lost_locks":
+    локи, які не вдалося повернути, "left": файли, що лишились у теці
+    порятунку (лише якщо щось пішло не так)}.
+    """
+    plan = plan or rollback_plan(wc, username, password)
+    res = {"plan": plan, "kept": 0, "lost_locks": [], "left": []}
+    if plan["full"]:
+        _recheckout(wc, username, password, progress)
+        _set_pending(wc, None)
+    elif plan["nodes"]:
+        # вміст із перерваного минулого разу — спершу на місце
+        left = _pending(wc) or {}
+        stuck = _put_back([tuple(x) for x in left.get("saved") or []])
+        if stuck:
+            res["left"] = stuck
+            _set_pending(wc, dict(left, saved=[[o, k] for o, k in left["saved"]
+                                               if k in stuck]))
+            return res
+        # Кирилицю svn на цьому комп'ютері в argv не прийме, а 8.3-псевдонімів
+        # тут може й не бути (їх вимикають на томі) — тоді лише цілком.
+        names_ok = all(_argv_rel(wc, r) for r in plan["nodes"]
+                       if os.path.exists(os.path.join(wc, r.replace("/", os.sep)))
+                       or _fits(r, _acp()))
+        if not names_ok:
+            _recheckout(wc, username, password, progress)
+            _set_pending(wc, None)
+            res["plan"] = dict(plan, full=True)
+            if plan["locks"]:
+                res["lost_locks"] = _relock(wc, plan["locks"], username, password, me)
+            return res
+        rescue = _rescue_dir(wc)
+        saved, done = [], False
+        pend = {"head": plan["head"], "newest": plan["newest"],
+                "nodes": plan["nodes"], "kinds": plan["kinds"],
+                "locks": plan["locks"]}
+        try:
+            # вузол, якого на диску немає (стерли руками), exclude не бере:
+            # повертаємо його з копії, а нижче він приїде вже з сервера
+            gone = [r for r in plan["exclude"]
+                    if not os.path.exists(os.path.join(wc, r.replace("/", os.sep)))]
+            if gone:
+                _run(["revert", "--depth", "infinity"], cwd=wc, targets=gone,
+                     timeout=None)
+            n = 0
+            changed = {os.path.join(wc, r.replace("/", os.sep))
+                       for r in plan.get("modified") or []}
+            for rel in plan["nodes"]:
+                p = os.path.join(wc, rel.replace("/", os.sep))
+                if rel in gone or not os.path.exists(p):
+                    continue
+                for f in ([p] if os.path.isfile(p) else
+                          [os.path.join(r, x) for r, _, xs in os.walk(p) for x in xs]):
+                    saved.append((f, _keep(f, rescue, n, move=f in changed)))
+                    n += 1
+                    _set_pending(wc, dict(pend, saved=[list(x) for x in saved]))
+            if changed:
+                # змінене вже відкладено — svn повертає на місце свою копію,
+                # і для exclude файл стає незміненим
+                _run(["revert"], cwd=wc, targets=[
+                    os.path.relpath(f, wc) for f in changed], timeout=None)
+            # По одному вузлу за виклик: разом із 8.3-псевдонімом svn плутає
+            # одну й ту саму теку, написану двічі по-різному («is not a
+            # committed directory»), а поодинці все гаразд (перевірено).
+            for rel in plan["exclude"]:
+                _run(["update", "--set-depth", "exclude"], cwd=wc, timeout=None,
+                     operands=[_argv_rel(wc, rel)])
+            back, stubs = [], []
+            for rel in plan["nodes"]:
+                full = os.path.join(wc, rel.replace("/", os.sep))
+                if not _fits(rel, _acp()) and not os.path.exists(full):
+                    stubs.append(full)
+                    # псевдонім є лише в наявного — ставимо порожню заглушку
+                    # (файл чи теку, як було); svn візьме її як зміну (--force),
+                    # а в finally на її місце ляже справжній вміст
+                    if plan["kinds"].get(rel) == "dir":
+                        os.makedirs(full, exist_ok=True)
+                    else:
+                        os.makedirs(os.path.dirname(full), exist_ok=True)
+                        open(full, "wb").close()
+                back.append(_argv_rel(wc, rel))
+            nt = (_notifier(progress, "download", len(plan["nodes"]), wc)
+                  if progress else None)
+            for op in back:
+                _run(["update", "--set-depth", "infinity", "--force"], cwd=wc,
+                     operands=[op], username=username, password=password,
+                     timeout=None, notifier=nt)
+            # Заглушка, на місце якої нічого не ляже (файл стерли руками ще до
+            # лікування), не сміє лишитись порожнім файлом: версійна — svn
+            # повертає свою копію, неверсійна (на сервері такого немає) — геть.
+            # Невдале «Get latest» перед лікуванням (а людина майже напевно
+            # його тиснула) лишає теки незавершеними — svn позначає їх так
+            # іще до звіту серверу. Довершуємо самі теки, без вмісту.
+            for f in status(wc):
+                if f.get("status") == "incomplete":
+                    op = _argv_rel(wc, f["path"])
+                    if op:
+                        _run(["update", "--depth", "empty"], cwd=wc, operands=[op],
+                             username=username, password=password, timeout=300)
+            mine = {o for o, _ in saved}
+            for full in stubs:
+                if full in mine or not os.path.isfile(full) or os.path.getsize(full):
+                    continue
+                if _versioned(wc, full):
+                    _run(["revert"], cwd=wc, targets=[os.path.relpath(full, wc)],
+                         timeout=None)
+                else:
+                    os.unlink(full)
+            done = True
+        finally:
+            res["left"] = _put_back(saved)
+            res["kept"] = len(saved) - len(res["left"])
+            if res["left"]:
+                _set_pending(wc, dict(pend, saved=[[o, k] for o, k in saved
+                                                   if k in res["left"]]))
+            else:
+                _rmtree(rescue)
+                _set_pending(wc, None if done else dict(pend, saved=[]))
+    if plan["locks"] and (plan["full"] or plan["nodes"]):
+        res["lost_locks"] = _relock(wc, plan["locks"], username, password, me)
+    return res
+
+
+def _recheckout(wc, username=None, password=None, progress=None):
+    """Нова копія в ту саму теку: .svn — убік, checkout --force. Файли на
+    диску svn не чіпає («E» — existed): що відрізняється від сервера, стає
+    зміною; чого на сервері немає — новим файлом.
+
+    Стара .svn лягає ПОЗА проєкт (поруч, на тому ж диску): якщо APSVN
+    закриють посеред завантаження, у проєкті вона з'явилась би новою текою
+    на десятки гігабайтів — і її можна було б здати."""
+    url = _safe_url(info(wc))
+    adm = os.path.join(wc, ".svn")
+    rescue = _rescue_dir(wc)
+    old = os.path.join(rescue, "svn")
+    os.replace(adm, old)
+    try:
+        _run(["checkout", "--force"], operands=[url + "@HEAD", wc], cwd=wc,
+             username=username, password=password, timeout=None, _retry=False,
+             notifier=_notifier(progress, "download", None, wc) if progress else None)
+    except BaseException:
+        # не вийшло — повертаємо все як було: стара копія хоч і хвора, та своя
+        if os.path.isdir(adm):
+            _rmtree(adm)
+        if not os.path.exists(adm):
+            os.replace(old, adm)
+            _rmtree(rescue)
+        raise
+    # стара .svn — лише внутрішній стан хворої копії: робота людини на диску
+    _rmtree(rescue)
 
 
 def probe_dir(folder):

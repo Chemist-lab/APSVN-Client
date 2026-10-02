@@ -881,6 +881,122 @@ def _scan_new(wc, rel, cap, want_names):
     return names, n, total, cut
 
 
+# --- «Not on the server»: усе локальне, чого немає на сервері ------------------
+# Резервні копії Blender (.blend1, .blend2…) — окремою групою від решти
+# мотлоху: саме вони займають гігабайти, кожна — повний розмір сцени.
+BACKUP_RE = re.compile(r"\.blend\d+$", re.I)
+# Мотлох, який до Кошика не йде навіть разом з іншим: desktop.ini тримає
+# налаштування теки Windows, а .mine/.rN/.prej відкритого конфлікту svn
+# потрібні, щоб вибрати версію (див. _CONFLICT_ART нижче).
+_KEEP_RE = re.compile(r"^desktop\.ini$", re.I)
+_CONFLICT_ART = re.compile(r"^(.*)\.(?:mine|r\d+|prej)$", re.I)
+LOCAL_GROUPS = ("new", "backups", "temp", "ignored", "nested")
+WALK_CAP = 200000          # файлів на весь обхід: далі — «і ще», без зависання
+
+
+def local_only(wc, cap=300):
+    """Усе в теці проєкту, чого немає на сервері, — групами, найважче зверху.
+
+    new      — нове, ще не здане (вміст нових тек — одним рядком на теку);
+    backups  — резервні копії Blender, temp — тимчасове й системне: те, що
+               Changes ховає навмисно (JUNK_RE);
+    ignored  — те, що не пускають правила svn (svn:ignore, global-ignores);
+    nested   — окремі svn-копії всередині теки проєкту.
+
+    Лише локально (svn status --no-ignore, без сервера) і лише читання.
+    cap — скільки рядків на групу віддати (None — усі: так їх бере Кошик).
+    У рядків мотлоху recyclable — чи можна прибрати їх у Кошик.
+    """
+    root = _xml(["status", "--no-ignore", "."], cwd=wc, timeout=None)
+    rows = {k: [] for k in LOCAL_GROUPS}
+    conflicted, found = set(), []
+    for e in root.iter("entry"):
+        ws = e.find("wc-status")
+        item = ws.get("item") if ws is not None else None
+        rel = _rel(e.get("path"))
+        if item == "conflicted" or (ws is not None and
+                                    ws.get("tree-conflicted") == "true"):
+            conflicted.add(rel)
+        if item in ("unversioned", "ignored") and rel:
+            found.append((rel, item == "ignored"))
+
+    walked = [0]
+
+    def junk_row(rel, st):
+        name = rel.rsplit("/", 1)[-1]
+        if BACKUP_RE.search(name):
+            group, ok = "backups", True
+        else:
+            m = _CONFLICT_ART.match(rel)
+            group = "temp"
+            ok = not _KEEP_RE.search(name) and not (m and m.group(1) in conflicted)
+        rows[group].append({"path": rel, "kind": "file", "files": 1,
+                            "bytes": st.st_size, "mtime": st.st_mtime,
+                            "recyclable": ok})
+
+    for rel, ignored in found:
+        full = os.path.join(wc, rel.replace("/", os.sep))
+        try:
+            st = os.stat(full)
+        except OSError:
+            continue
+        if not os.path.isdir(full):
+            name = rel.rsplit("/", 1)[-1]
+            if JUNK_RE.search(name):
+                junk_row(rel, st)
+            else:
+                rows["ignored" if ignored else "new"].append(
+                    {"path": rel, "kind": "file", "files": 1,
+                     "bytes": st.st_size, "mtime": st.st_mtime})
+            continue
+        if os.path.isdir(os.path.join(full, ".svn")):
+            rows["nested"].append({"path": rel, "kind": "dir", "files": None,
+                                   "bytes": None, "mtime": st.st_mtime})
+            continue
+        # тека: її мотлох — у свої групи, решта — одним рядком на теку
+        n, total, newest, stack = 0, 0, st.st_mtime, [full]
+        while stack and walked[0] < WALK_CAP:
+            try:
+                entries = list(os.scandir(stack.pop()))
+            except OSError:
+                continue
+            for x in entries:
+                try:
+                    if x.is_dir(follow_symlinks=False):
+                        if x.name != ".svn":
+                            stack.append(x.path)
+                        continue
+                    xs = x.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                walked[0] += 1
+                if JUNK_RE.search(x.name):
+                    junk_row(os.path.relpath(x.path, wc).replace("\\", "/"), xs)
+                    continue
+                n += 1
+                total += xs.st_size
+                newest = max(newest, xs.st_mtime)
+        if n:
+            rows["ignored" if ignored else "new"].append(
+                {"path": rel + "/", "kind": "dir", "files": n, "bytes": total,
+                 "mtime": newest})
+
+    groups = []
+    for k in LOCAL_GROUPS:
+        lst = sorted(rows[k], key=lambda r: (-(r["bytes"] or 0), r["path"].lower()))
+        rec = [r for r in lst if r.get("recyclable")]
+        groups.append({
+            "id": k, "rows": lst if cap is None else lst[:cap],
+            "more": 0 if cap is None else max(0, len(lst) - cap),
+            "files": sum(r["files"] or 0 for r in lst),
+            "bytes": sum(r["bytes"] or 0 for r in lst),
+            "recyclable": len(rec),
+            "recyclable_bytes": sum(r["bytes"] for r in rec)})
+    return {"groups": groups, "cut": walked[0] >= WALK_CAP,
+            "files": sum(g["files"] for g in groups),
+            "bytes": sum(g["bytes"] for g in groups)}
+
+
 def dir_summary(wc, rel):
     """Скільки всього у кинутій теці — для рядка списку."""
     _, n, total, cut = _scan_new(wc, rel, COUNT_CAP, False)

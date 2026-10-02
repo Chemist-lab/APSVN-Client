@@ -39,6 +39,16 @@ Nothing to install — Python and svn live inside the folder.
   next to the Submit button; APSVN remembers that choice.
 * **✖ Discard my changes** — throw away what you did since your last submit.
   This cannot be undone.
+* **🗂 Files not on the server…** (under **⚙ Settings**) — everything in
+  the project folder that the server does not have, heaviest first:
+  * new files you have not submitted yet;
+  * Blender's backups (`.blend1`, `.blend2`…), each the full size of a scene;
+  * temporary and system files;
+  * whatever the project's svn rules ignore;
+  * other svn copies inside the folder.
+
+  📂 shows a file in Explorer. Blender's backups and temporary files can be
+  moved to the Recycle Bin from here. New files are never offered.
 * **🛠 Repair this project** (under **⚙ Settings**) — if APSVN was closed
   in the middle of a transfer and now complains that the project is busy. Your
   files are not affected.
@@ -485,7 +495,7 @@ part of the root, with the code in `Resources/app`.
 | `blender.py`    | which Blender opens a scene: the studio's version, found on this machine |
 | `blendthumb.py` | preview embedded in a `.blend` |
 | `imgthumb.py`   | previews for png/jpg/tga/exr |
-| `tests/`        | 953 checks without a server, up to 26 more (read-only) against the real one |
+| `tests/`        | 974 checks without a server, up to 26 more (read-only) against the real one |
 
 Settings live in `%APPDATA%\APSVN\config.json`, format 2:
 `{"format":2, "projects":[…], "current":"<id>", …mirror of the current one…}`.
@@ -1255,6 +1265,24 @@ behind decisions that look odd until you know why.
 
   The old `.svn` is set aside outside the project too, so an interrupted
   download never leaves a ten-gigabyte folder that could be submitted.
+* **“Files not on the server” moves junk to the Recycle Bin, never deletes,
+  and decides for itself what is junk.**
+  * The list is a local `svn status --no-ignore` plus `scandir` through new and
+    ignored folders. It never asks the server, and on a real project it
+    takes a moment. Junk inside a new folder goes to its own group; the
+    folder's row counts only the rest.
+  * The interface sends only the group's name (`recycle_junk("backups")`);
+    the list is built again on the program's side. Nothing a page could
+    send makes APSVN recycle a new, unsubmitted file.
+  * Shown, but never recycled:
+    * `desktop.ini`, which holds the folder's Windows settings;
+    * `.mine` / `.rN` / `.prej` of a conflict that is still open, which are
+      needed to choose a version.
+  * On Windows, `SHFileOperation` with `FOF_ALLOWUNDO` alone *permanently*
+    deletes where there is no Recycle Bin (network drives, some removable
+    ones). `FOF_WANTNUKEWARNING` asks the person first, and their “no” keeps
+    the file. Checked by hand 2026-10-03: the file landed in the Recycle Bin
+    with its original location.
 
 ### Updating itself
 
@@ -1429,6 +1457,15 @@ runtime\python.exe tests\test_apsvn.py
   “another program” refused quietly with its lock intact; never a plain
   `cleanup`; tidied after a submit, an update, at start and daily, never
   during a transfer;
+* `test_local_only.py` — *Files not on the server* on a project that has a
+  bit of everything: a new file, a new folder of frames (with a backup
+  inside), Blender backups, temporary files, `desktop.ini`, an open
+  conflict's leftovers, an `svn:ignore`d cache, another copy inside. It
+  checks:
+  * the groups, the sizes and the order, heaviest first;
+  * the Recycle Bin takes only what is allowed, from a list built again;
+  * new files are refused;
+  * a failure is reported, and the log line is written;
 * `test_meter.py` — the submit byte meter: exact counts both ways, a reply
   after the end of writing, nowhere but the project's server, several tunnels
   at once, stopping; percent, speed and remaining time from it; https only;

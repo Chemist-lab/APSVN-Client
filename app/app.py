@@ -2427,6 +2427,46 @@ class Api:
         full = ex.inside(self._wc(), path)
         return desktop.reveal(full) or desktop.open_path(os.path.dirname(full))
 
+    def local_only(self):
+        """«Not on the server»: усе в теці проєкту, чого немає на сервері."""
+        return self._reading(sc.local_only, self._wc())
+
+    def recycle_junk(self, group):
+        """Прибрати в Кошик мотлох однієї групи («backups» чи «temp»).
+
+        Що саме прибирати, вирішує НЕ інтерфейс: перелік береться наново, тут,
+        і в Кошик іде лише те, що й зараз — мотлох, дозволений до прибирання.
+        Нове, ще не здане, сюди не потрапляє ніколи."""
+        if group not in ("backups", "temp"):
+            raise sc.SvnError("Only Blender backups and temporary files can be "
+                              "moved to the Recycle Bin from here.")
+        wc = self._wc()
+
+        def work():
+            data = sc.local_only(wc, cap=None)
+            rows = [r for g in data["groups"] if g["id"] == group
+                    for r in g["rows"] if r.get("recyclable")]
+            if not rows:
+                return "There is nothing to move to the Recycle Bin."
+            full = {ex.inside(wc, r["path"]): r for r in rows}
+            left = set(desktop.to_recycle_bin(list(full)))
+            gone = [r for f, r in full.items() if f not in left]
+            size = sum(r["bytes"] for r in gone)
+            activity("recycle %s %s: %d file(s), %s%s" % (
+                (self._proj() or {}).get("name") or "?", group, len(gone),
+                human_size(size), "; stayed: %d" % len(left) if left else ""))
+            out = ("Moved %d file%s (%s) to the Recycle Bin." % (
+                len(gone), "" if len(gone) == 1 else "s", human_size(size))
+                if gone else "Nothing was moved.")
+            if left:
+                out += (" 1 file stayed where it was — the Recycle Bin was not "
+                        "available for it, or it is in use." if len(left) == 1 else
+                        " %d files stayed where they were — the Recycle Bin was "
+                        "not available for them, or they are in use." % len(left))
+            return out
+
+        return self._guard(work)
+
     def list_new_folder(self, path):
         """Вміст кинутої теки — коли її розгорнули в списку."""
         wc = self._wc()

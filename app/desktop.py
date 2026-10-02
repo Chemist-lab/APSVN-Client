@@ -126,6 +126,54 @@ def reveal(path):
         return False
 
 
+def to_recycle_bin(paths):
+    """Перенести файли в Кошик — так, щоб їх можна було відновити.
+
+    Windows: SHFileOperation з FOF_ALLOWUNDO. Там, де Кошика немає (мережевий
+    диск, частина знімних), Windows із самим лише FOF_ALLOWUNDO мовчки СТИРАЄ
+    назавжди; FOF_WANTNUKEWARNING натомість спершу питає людину — і її «ні»
+    лишає файл на місці. Повертає шляхи, які лишились (відмова чи збій).
+    """
+    paths = [os.path.abspath(p) for p in paths if os.path.lexists(p)]
+    if not paths:
+        return []
+    if WINDOWS:
+        import ctypes
+        from ctypes import wintypes
+
+        class SHFILEOPSTRUCTW(ctypes.Structure):
+            _fields_ = [("hwnd", wintypes.HWND), ("wFunc", wintypes.UINT),
+                        ("pFrom", ctypes.c_void_p), ("pTo", ctypes.c_void_p),
+                        ("fFlags", ctypes.c_ushort),
+                        ("fAnyOperationsAborted", wintypes.BOOL),
+                        ("hNameMappings", ctypes.c_void_p),
+                        ("lpszProgressTitle", wintypes.LPCWSTR)]
+
+        FO_DELETE = 3
+        flags = (0x0040 |      # FOF_ALLOWUNDO — у Кошик
+                 0x0010 |      # FOF_NOCONFIRMATION — згоду людина вже дала
+                 0x4000 |      # FOF_WANTNUKEWARNING — але не стирати мовчки
+                 0x0004 |      # FOF_SILENT
+                 0x0400)       # FOF_NOERRORUI — про невдачі скажемо самі
+        for i in range(0, len(paths), 200):
+            chunk = paths[i:i + 200]
+            # подвійний нуль у кінці — так SHFileOperation знає, де край списку
+            buf = ctypes.create_unicode_buffer("\0".join(chunk) + "\0\0")
+            op = SHFILEOPSTRUCTW(wFunc=FO_DELETE, fFlags=flags,
+                                 pFrom=ctypes.cast(buf, ctypes.c_void_p))
+            try:
+                ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+            except OSError:
+                pass
+    elif MAC:
+        for p in paths:
+            subprocess.run(["osascript", "-e",
+                            'tell application "Finder" to delete POSIX file "%s"'
+                            % p.replace("\\", "\\\\").replace('"', '\\"')],
+                           check=False, capture_output=True)
+    return [p for p in paths if os.path.lexists(p)]
+
+
 def message_box(title, text, warn=False):
     """Останній рубіж: сказати людині, чому програма не піднялася.
 

@@ -609,12 +609,13 @@ function showBroken(s) {
 // внутрішні режими -> кнопки вкладок. Історія ОДНОГО файлу лишає підсвіченими
 // «Файли», бо вона відкривається саме звідти.
 const TAB_OF = { files: "files", file: "files", log: "history",
-                 browse: "browse", tasks: "tasks" };
+                 browse: "browse", tasks: "tasks", local: "files" };
 
 function showView(v) {
   view = v;
   $("tab-broken").classList.add("hidden");
   $("filehist").classList.toggle("hidden", v !== "file");
+  $("localonly").classList.toggle("hidden", v !== "local");
   $("tab-files").classList.toggle("hidden", v !== "files");
   $("tab-history").classList.toggle("hidden", v !== "log");
   $("tab-browse").classList.toggle("hidden", v !== "browse");
@@ -2738,6 +2739,128 @@ async function checkUpdate(quiet) {
 
 $("b-update-app").onclick = () => { menuOpen(false); checkUpdate(false); };
 $("b-blender").onclick = () => { menuOpen(false); blenderDialog(); };
+$("b-local").onclick = () => { menuOpen(false); openLocalOnly(); };
+$("lo-back").onclick = () => { showView("files"); renderFiles(); };
+$("lo-again").onclick = () => openLocalOnly();
+
+/* --- «Not on the server»: усе в теці проєкту, чого немає на сервері ------
+   Changes навмисно ховає мотлох (резервні копії Blender, тимчасове) й
+   ігнороване, а нові теки показує одним рядком. Тут — усе, з розмірами,
+   найважче зверху: щоб знайти, що займає місце і що існує лише на цьому
+   комп'ютері. Мотлох можна прибрати в Кошик — нове не чіпаємо ніколи. */
+const LOCAL_GROUP = {
+  new: ["New — not submitted yet",
+        "These exist only on this computer until you submit them from Changes."],
+  backups: ["Blender backups (.blend1, .blend2…)",
+            "Blender keeps the previous save next to the scene — older copies, " +
+            "each the full size of the scene."],
+  temp: ["Temporary and system files",
+         "Leftovers from saving and from svn, Windows thumbnails. Leftovers of an " +
+         "open conflict and desktop.ini stay — they are still needed."],
+  ignored: ["Ignored by the project's svn rules",
+            "The project's rules keep these out of every submit."],
+  nested: ["Other projects inside this folder",
+           "Separate svn copies — they are not part of this project."],
+};
+
+async function openLocalOnly() {
+  showView("local");
+  $("lo-title").textContent = "Not on the server";
+  $("lo-rows").innerHTML = "<div class='empty'>Looking through the project folder…</div>";
+  let d;
+  try { d = await api().local_only(); }
+  catch (e) {
+    $("lo-rows").innerHTML = "";
+    $("lo-rows").append(Object.assign(document.createElement("div"),
+                        { className: "empty", textContent: clean(e) }));
+    return;
+  }
+  if (view !== "local") return;               // поки шукали, людина пішла
+  renderLocalOnly(d);
+}
+
+function renderLocalOnly(d) {
+  $("lo-title").textContent = d.files
+    ? "Not on the server — " + fmtSize(d.bytes) + " in " + d.files +
+      (d.files === 1 ? " file" : " files") + (d.cut ? " (and more)" : "")
+    : "Not on the server — nothing";
+  const box = $("lo-rows"); box.innerHTML = "";
+  for (const g of d.groups) {
+    const [title, hint] = LOCAL_GROUP[g.id];
+    const sec = document.createElement("div"); sec.className = "lo-g";
+    const h = document.createElement("div"); h.className = "lo-gh";
+    const t = document.createElement("span"); t.className = "lo-gt"; t.textContent = title;
+    const s = document.createElement("span"); s.className = "lo-gs";
+    s.textContent = g.id === "nested"
+      ? (g.rows.length ? g.rows.length + (g.rows.length === 1 ? " folder" : " folders") : "—")
+      : g.files ? fmtSize(g.bytes) + " · " + g.files + (g.files === 1 ? " file" : " files")
+                : "—";
+    h.append(t, s);
+    if (g.recyclable)
+      h.append(mini("Move to Recycle Bin…", "warn", () => recycleJunk(g, title)));
+    sec.append(h);
+    if (g.rows.length) {
+      const p = document.createElement("div"); p.className = "lo-hint"; p.textContent = hint;
+      sec.append(p);
+    }
+    for (const r of g.rows) sec.append(localRow(r, g.id));
+    if (g.more) {
+      const m = document.createElement("div"); m.className = "lo-more";
+      m.textContent = "…and " + g.more + " more — the heaviest are on top";
+      sec.append(m);
+    }
+    box.append(sec);
+  }
+}
+
+function localRow(r, gid) {
+  const row = document.createElement("div"); row.className = "lo-r";
+  const p = document.createElement("div"); p.className = "lo-p";
+  const path = r.path.replace(/\/$/, "");
+  const cut = path.lastIndexOf("/");
+  if (cut > 0) {
+    const dir = document.createElement("span"); dir.className = "lo-d";
+    dir.textContent = path.slice(0, cut + 1);
+    p.append(dir);
+  }
+  p.append(path.slice(cut + 1) + (r.kind === "dir" ? "/" : ""));
+  p.title = r.path;
+  row.append(p);
+  if (r.kind === "dir" && r.files)
+    row.append(Object.assign(document.createElement("span"),
+               { className: "lo-n", textContent: r.files + (r.files === 1 ? " file" : " files") }));
+  if (r.recyclable === false)
+    row.append(Object.assign(document.createElement("span"),
+               { className: "lo-keep", textContent: "stays" }));
+  row.append(Object.assign(document.createElement("span"),
+             { className: "lo-sz", textContent: r.bytes == null ? "" : fmtSize(r.bytes) }));
+  row.append(Object.assign(document.createElement("span"),
+             { className: "lo-when", textContent: agoEpoch(r.mtime) }));
+  const b = mini("📂", "", () => api().reveal(path));
+  b.title = "show in " + (navigator.platform.startsWith("Mac") ? "Finder" : "Explorer");
+  row.append(b);
+  return row;
+}
+
+async function recycleJunk(g, title) {
+  const a = await ask({
+    title: "Move " + g.recyclable + (g.recyclable === 1 ? " file" : " files") +
+           " to the Recycle Bin?",
+    lines: [
+      title + ".",
+      g.id === "backups"
+        ? "These are older copies of your scenes that Blender made on saving. " +
+          "The scenes themselves are not touched."
+        : "Nothing that belongs to the project is touched.",
+      "They go to the Recycle Bin, so you can still get them back until it " +
+      "is emptied. If a drive has no Recycle Bin, Windows asks first.",
+    ],
+    facts: [["Files", String(g.recyclable)], ["Frees up", fmtSize(g.recyclable_bytes)]],
+    ok: "Move to Recycle Bin",
+  });
+  if (!a.ok) return;
+  act("recycle_junk", [g.id], "Moving to the Recycle Bin…", openLocalOnly);
+}
 for (const id of ["b-fix", "b-server", "b-forget", "b-update-app"])
   $(id).addEventListener("click", () => menuOpen(false));
 // клік по самому меню не має його закривати — інакше пункт не встигне спрацювати

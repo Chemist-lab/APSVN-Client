@@ -278,10 +278,11 @@ function startProgress() {
     if (e.phase === "send" || e.phase === "finalize") {
       if (!sendStart) sendStart = Date.now();
       const secs = Math.round((Date.now() - sendStart) / 1000);
-      // З лічильником на трубі видно саму передачу — тоді досить часу.
-      // Без нього (не https) svn мовчить, і людині варто знати, що вікно живе.
+      // Коли передачу видно, досить часу (і того, як іде мережа). Без
+      // цього svn мовчить, і людині варто знати, що вікно живе.
       $("busy-sub").textContent = e.measured
-        ? (secs > 2 ? mmss(secs) + " so far" : "please keep this window open")
+        ? (secs > 2 ? mmss(secs) + " so far" : "please keep this window open") +
+          sentOf(e)
         : (secs > 2 ? mmss(secs) + " so far — " : "") +
           "svn reports nothing while sending; the window is not stuck";
     } else {
@@ -298,6 +299,15 @@ function startProgress() {
 function rateOf(e) {
   const real = e.kind === "download" || (e.kind === "upload" && e.measured);
   return real && e.rate > 65536 ? " · " + mb(e.rate) + "/s" : "";
+}
+
+// Скільки справді пішло мережею. Змінений файл svn шле лише різницею (і
+// стиснутою), тож це число буває набагато менше за смугу — так і має бути:
+// смуга йде за файлами, а не за мережею.
+function sentOf(e) {
+  if (e.basis !== "files" || !e.sent) return "";
+  return " · " + mb(e.sent) + " uploaded" +
+         (e.sent_rate > 65536 ? " · " + mb(e.sent_rate) + "/s" : "");
 }
 
 // Залишок часу. На качанні він точний, на заливанні — оцінка за швидкістю,
@@ -326,11 +336,14 @@ function progText(e) {
            (e.pct != null ? " (" + e.pct + "%)" : "") + rateOf(e) + etaOf(e);
   }
   if (e.phase === "send" && e.measured && e.bytes != null)
-    // справжні байти до сервера; обсяг — сума файлів, тобто «до»: змінений
-    // файл svn може послати меншою різницею, і тоді смуга скінчиться раніше
-    return "Sending — " + mb(e.bytes) +
+    // basis "files": як далеко svn просунувся по файлах — швидкість мережі
+    // тоді в рядку під смугою (sentOf). "network": байти на трубі, обсяг —
+    // лише верхня межа (змінений файл їде різницею).
+    return "Sending — " +
+           mb(e.total_bytes ? Math.min(e.bytes, e.total_bytes) : e.bytes) +
            (e.total_bytes ? " of " + mb(e.total_bytes) : "") +
-           (e.pct != null ? " (" + e.pct + "%)" : "") + rateOf(e) + etaOf(e);
+           (e.pct != null ? " (" + e.pct + "%)" : "") +
+           (e.basis === "network" ? rateOf(e) : "") + etaOf(e);
   if (e.phase === "send")
     return "Sending file data…" +
            (e.total_bytes ? " — " + mb(e.total_bytes) + " to upload" : "") +

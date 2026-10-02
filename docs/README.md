@@ -470,7 +470,7 @@ part of the root, with the code in `Resources/app`.
 | `blender.py`    | which Blender opens a scene: the studio's version, found on this machine |
 | `blendthumb.py` | preview embedded in a `.blend` |
 | `imgthumb.py`   | previews for png/jpg/tga/exr |
-| `tests/`        | 889 checks without a server, up to 26 more (read-only) against the real one |
+| `tests/`        | 909 checks without a server, up to 26 more (read-only) against the real one |
 
 Settings live in `%APPDATA%\APSVN\config.json`, format 2:
 `{"format":2, "projects":[…], "current":"<id>", …mirror of the current one…}`.
@@ -1110,38 +1110,73 @@ behind decisions that look odd until you know why.
   version is exact — the size is known in advance and the temporary file can be
   watched. Uploading used not to be: svn prints nothing while sending (the dots
   in “Transmitting file data” come one per 64 MB), its read counters come to
-  1.0–2.9× the payload, and the process I/O counters do not see network
-  traffic at all (2026-10-02: svn downloaded ~17 KB, `OtherTransferCount`
-  showed 7 KB). So a percentage there would have been invented.
-* **Submit has a real progress bar: a byte meter on the pipe to the server.**
-  For the duration of a submit APSVN opens a CONNECT tunnel on `127.0.0.1`
-  (`app/meter.py`) and tells svn to go through it with its own option, for
-  that one command only (`servers:global:http-proxy-*`). TLS stays end to end
-  between svn and the server — the tunnel moves encrypted bytes and sees
-  neither the files nor the password — and it lets through only the
-  project's own server. What it counts towards the server is the progress:
-  *Sending — 1.2 GB of 3.4 GB (35%) · 85 MB/s · 25s left*, with the speed and
-  the remaining time from this transfer, not from history. The total is the
-  sum of the files' sizes, an upper bound: a changed file may go as a smaller
-  difference, and then the bar simply ends early; it stops at 99% until
-  *Committing transaction*, where the rest is the server's. The cost is about
-  4% of one core per 100 MB/s (3 GiB through the tunnel in 1.4 s); traffic
-  does not double — the svn → tunnel leg never leaves the machine. **The
-  tunnel is a separate process**, and that is not decoration: the first
+  1.0–4.0× the payload depending on the shape of the change, and the process
+  I/O counters do not see network traffic at all (2026-10-02: svn downloaded
+  ~17 KB, `OtherTransferCount` showed 7 KB). What svn *writes*, though, turned
+  out to be exact — see the next point.
+* **The submit bar follows the files, not the network.** While svn sends a
+  file it writes that file's new copy into `.svn` (the base for the next
+  change) and nothing else of any size, so what the svn process has written is
+  how far it has got through the files (`svn_client._io_counts`). Measured
+  2026-10-02 — svn 1.14.5, a 400 MB file, a local svnserve, process counters
+  every 0.25 s:
+
+  | Submit                          | Read  | **Written** | Over the network |
+  |---------------------------------|-------|-------------|------------------|
+  | new file                        | 1.00× | **1.00×**   | 1.00×            |
+  | a quarter changed, scattered    | 2.00× | **1.00×**   | 0.25×            |
+  | changed throughout              | 2.00× | **1.00×**   | 1.00×            |
+  | same size, 1 MB changed         | 4.00× | **1.00×**   | 0.00×            |
+
+  and the written bytes grew evenly in time. The last column is why the first
+  version of the bar lied: it counted bytes on the network against the files'
+  size, and svn sends a changed file only as its difference (compressed, too).
+  A real submit of a 6.7 GB scene sent 2.2 GB; the bar sat at *0% · 1.2 MB/s ·
+  95m 16s left* while svn went through the parts that had not changed, and the
+  submit was over at a third of it. Now the bar reads *Sending — 4.2 GB of
+  6.7 GB (63%) · 1m 10s left*, and under it is what actually went over the
+  network: *1m 05s so far · 1.4 GB uploaded · 29 MB/s*. The remaining time
+  uses the slower of two speeds through the files, over ~1 s and ~8 s. A
+  changed file goes fast where svn only compares and at network speed where it
+  sends; the short speed catches a slowdown at once, and the long one keeps a
+  fast stretch from promising too much. The estimate appears after 3 s, not
+  from the first random samples. A simulation of that submit (1 GB, two thirds
+  barely changed, a network capped at 30 MB/s, 16 s in all): the old bar said
+  *0% · 59m left* for five seconds and stopped at 31%; the new one was at 66%
+  by 3.7 s, its estimate was within a second of the truth from 8 s on, and it
+  ended at the end. The total counts only what svn goes through: added,
+  changed and replaced files. A deleted file still lies on disk until the
+  submit is done, and it used to inflate the total too. The bar stops at 99%
+  until *Committing transaction*, where the rest is the server's. Not on
+  `file://`: there svn.exe writes the repository itself as well. On a Mac,
+  which has no process counters, the bar counts bytes on the network as
+  before. Every submit of 64 MB or more leaves a line in `apsvn.log`, so
+  real submits keep checking the measurement: *submit r41: 6.7 GB in 1m 40s;
+  svn went through 6.7 GB (1.00x); uploaded 2.2 GB*.
+* **What goes over the network is counted by a tunnel.** For the duration of
+  a submit APSVN opens a CONNECT tunnel on `127.0.0.1` (`app/meter.py`) and
+  tells svn to go through it with its own option, for that one command only
+  (`servers:global:http-proxy-*`). TLS stays end to end between svn and the
+  server — the tunnel moves encrypted bytes and sees neither the files nor the
+  password — and it lets through only the project's own server. The cost is
+  about 4% of one core per 100 MB/s (3 GiB through the tunnel in 1.4 s);
+  traffic does not double — the svn → tunnel leg never leaves the machine.
+  **The tunnel is a separate process**, and that is not decoration: the first
   version lived inside the program and gave an artist 1.7 MB/s instead of the
   usual ~20 — Python threads in one process share the GIL, and after every
   chunk (a TLS record, up to 16 KB) the tunnel waited its turn behind the
   window and its bridge. Measured: the same tunnel next to one busy Python
   thread did 6.7 MB/s instead of 2 GB/s; as its own process, 2.5 GB/s with the
-  same busy thread, and on the live server 137 MB/s (direct: 167). The
-  program only reads its “so much has gone” lines a few times a second; a
-  failure is judged after the tunnel is stopped and its last numbers read,
-  never from a report that has not arrived yet. Only for
-  https; a tunnel that cannot open means a submit straight to the server, as
-  before. And if svn did not reach the server through the tunnel at all
-  (no tunnel opened — no transaction started), the submit is retried directly
-  and that goes to `apsvn.log`; once the tunnel did reach the server, an error
-  is a real one and is reported, never retried.
+  same busy thread. On the live server, four interleaved runs: 157 MB/s
+  direct, 183 through the tunnel — noise, not a loss. The program only reads
+  its “so much has gone” lines a few times a second; a failure is judged
+  after the tunnel is stopped and its last numbers read, never from a report
+  that has not arrived yet. Only for https; a tunnel that cannot open means a
+  submit straight to the server, as before. And if svn did not reach the
+  server through the tunnel at all (no tunnel opened — no transaction
+  started), the submit is retried directly and that goes to `apsvn.log`; once
+  the tunnel did reach the server, an error is a real one and is reported,
+  never retried.
 
 ### Updating itself
 

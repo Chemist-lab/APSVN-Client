@@ -1746,9 +1746,12 @@ class Api:
                 if not (q in picked or any(q.startswith(d + "/") for d in picked)):
                     continue
                 expect += 1
-                # На фазі передачі svn мовчить, тож відсотків там не буде.
-                # Але сказати, СКІЛЬКИ саме їде, ми можемо — і людина хоча б
-                # розумітиме, чому це триває довго.
+                # Обсяг передачі — файли, чий вміст svn справді пройде.
+                # Видалений сюди не йде, хоч і лежить на диску до кінця здачі
+                # (див. sc.remove): раніше він роздував обсяг, і смуга
+                # кінчалась, не дійшовши й до половини.
+                if f.get("status") == "deleted":
+                    continue
                 try:
                     nbytes += os.path.getsize(os.path.join(
                         wc, q.replace("/", os.sep)))
@@ -1763,12 +1766,23 @@ class Api:
             keep = self.conf.get("prefs", {}).get("keep_locks", False) \
                 if keep_locks is None else bool(keep_locks)
             holders = _placeholders(wc, send, after)
-            gauge = self._meter_for(self.c.get("url"))
+            url = self.c.get("url") or ""
+            gauge = self._meter_for(url)
+            last = {}
+
+            def tick(e):
+                last.clear()
+                last.update(e)
+                self._tick(e)
+
+            # Смуга — за тим, скільки svn уже пройшов по файлах (див.
+            # sc._io_counts). Крім file://: там svn пише ще й у сховище.
             commit = lambda g: sc.commit(
                 wc, send, message, username=u, password=p,
-                progress=self._tick, total=expect or len(send),
+                progress=tick, total=expect or len(send),
                 total_bytes=nbytes or None, rate_hint=self._rate("upload"),
-                keep_locks=keep, meter=g)
+                keep_locks=keep, meter=g,
+                track_writes=not url.startswith("file:"))
             try:
                 try:
                     out = commit(gauge)
@@ -1793,13 +1807,31 @@ class Api:
                     gauge.stop()
                 _drop_placeholders(holders)
             took = time.monotonic() - t0
-            # навчаємось на справжніх байтах, коли вони є: розміри файлів для
-            # змінених — лише верхня межа (svn шле різницю)
-            sent = gauge.up if gauge is not None and gauge.up else nbytes
-            self._learn_rate("upload", sent, took)
-            if sent > 8 * 1024 * 1024 and sc.COMMIT_RE.search(out):
-                out += " (%.0f MB in %s, %.1f MB/s)" % (
-                    sent / 1048576, _mmss(took), sent / 1048576 / took)
+            # Швидкість на майбутнє — у байтах ФАЙЛІВ за секунду: саме так її
+            # і вживає оцінка залишку там, де поступу не виміряти.
+            self._learn_rate("upload", nbytes, took)
+            done = sc.COMMIT_RE.search(out)
+            up = gauge.up if gauge is not None else 0
+            if nbytes > 8 * 1024 * 1024 and done:
+                # Мережею змінений файл їде лише різницею (і стиснутим), тож
+                # «вивантажено» буває набагато менше за розмір — і це добре.
+                out += (" (%s in %s, %s uploaded)" % (
+                    human_size(nbytes), _mmss(took), human_size(up))
+                    if up and up < nbytes * 0.9 else
+                    " (%s in %s, %.1f MB/s)" % (
+                        human_size(nbytes), _mmss(took),
+                        nbytes / 1048576 / max(took, 0.001)))
+            if nbytes >= 64 * 1024 * 1024 and done:
+                # Для журналу: скільки svn пройшов по файлах (на цьому стоїть
+                # смуга) і скільки пішло мережею — щоб справжні здачі могли
+                # підтвердити або спростувати дослід із _io_counts.
+                walked = last.get("bytes") if last.get("basis") == "files" else None
+                activity("submit r%s: %s in %s; svn went through %s; "
+                         "uploaded %s" % (
+                             done.group(1), human_size(nbytes), _mmss(took),
+                             "%s (%.2fx)" % (human_size(walked), walked / nbytes)
+                             if walked else "—",
+                             human_size(up) if up else "—"))
             if gone and sc.COMMIT_RE.search(out):
                 # видалене лишалося на диску, щоб пережити коміт (див. remove)
                 sc.purge_deleted(wc, gone)

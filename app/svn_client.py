@@ -22,6 +22,7 @@
 import ctypes
 import datetime
 import locale
+import math
 import os
 import re
 import shutil
@@ -511,13 +512,30 @@ class _IO_COUNTERS(ctypes.Structure):
                 ("OtherTransferCount", ctypes.c_ulonglong)]
 
 
-def _io_read(handle):
-    """Скільки байтів процес svn.exe уже прочитав.
+def _io_counts(handle):
+    """Скільки байтів процес svn.exe уже прочитав і записав: (read, written).
 
-    Це НЕ відсоток переданого: залежно від транспорту svn перечитує файли
-    2.0-2.9 разу (перевірено дослідом), тож ділити на обсяг не можна. А от
-    ПОХІДНА цієї величини — справжня, виміряна швидкість роботи, і саме її
-    варто показати замість тиші.
+    Прочитане — НЕ відсоток переданого: svn читає файли від 1 до 4 разів
+    (робочий файл, його попередню версію з .svn, обидва ще раз, коли розмір
+    не змінився, на file:// — ще й сховище), тож ділити його на обсяг не
+    можна. Годиться лише похідна — швидкість.
+
+    ЗАПИСАНЕ на здачі — інша річ, і саме на ньому стоїть смуга. Поки svn шле
+    файл, він паралельно пише його нову копію в .svn (з неї потім береться
+    «що було» для наступної зміни) — і більше нічого вагомого. Дослід
+    2026-10-02, svn 1.14.5, файл 400 МБ, лічильники кожні 0.25 с:
+
+        здача                       прочитано  ЗАПИСАНО  пішло мережею
+        новий файл                    1.00x     1.00x       1.00x
+        змінено чверть, розкидано     2.00x     1.00x       0.25x
+        змінено все                   2.00x     1.00x       1.00x
+        той самий розмір, 1 МБ змін   4.00x     1.00x       0.00x
+
+    і записане росте рівно в часі. Тобто записане — це те, як далеко svn
+    просунувся по файлах, хоч би скільки з цього їхало мережею: змінений
+    файл svn шле лише різницею (справжня здача 2026-10-02: файл 6.7 ГБ,
+    мережею пішло 2.2 ГБ). Виняток — file://: там svn.exe сам пише ще й
+    у сховище, тож для нього записане не рахуємо.
     """
     if not desktop.WINDOWS:
         # На маку прямого аналога немає (psutil там io_counters не вміє), тож
@@ -527,7 +545,7 @@ def _io_read(handle):
         c = _IO_COUNTERS()
         if ctypes.windll.kernel32.GetProcessIoCounters(int(handle),
                                                        ctypes.byref(c)):
-            return c.ReadTransferCount
+            return c.ReadTransferCount, c.WriteTransferCount
     except Exception:
         pass
     return None
@@ -567,15 +585,18 @@ def _stream_lines(cmd, cwd, stdin_data, on_line, on_io=None):
     t.start()
 
     if on_io is not None:
+        ended = threading.Event()
+
         def sample():
-            while p.poll() is None:
-                n = _io_read(p._handle)
+            while p.poll() is None and not ended.is_set():
+                n = _io_counts(p._handle)
                 try:
                     on_io(n)          # None — лічильників ОС немає (мак)
                 except Exception:
                     pass
-                time.sleep(0.5)
-        threading.Thread(target=sample, daemon=True).start()
+                ended.wait(0.5)
+        sampler = threading.Thread(target=sample, daemon=True)
+        sampler.start()
 
     out = bytearray()
     buf = bytearray()
@@ -622,6 +643,16 @@ def _stream_lines(cmd, cwd, stdin_data, on_line, on_io=None):
         except Exception:
             pass
     p.wait()
+    if on_io is not None:
+        # Останні цифри — вже з завершеного процесу: заміри йдуть раз на
+        # 0.5 с, і без цього хвіст передачі губився б. Спершу зупинити
+        # фоновий замір, щоб його запізніле число не прийшло після цього.
+        ended.set()
+        sampler.join(timeout=2)
+        try:
+            on_io(_io_counts(p._handle))
+        except Exception:
+            pass
     t.join(timeout=5)
     return p.returncode, bytes(out), (err[0] if err else b"")
 
@@ -999,7 +1030,7 @@ def update(wc, username=None, password=None, progress=None, total=None):
 
 def commit(wc, paths, message, username=None, password=None, progress=None,
            total=None, total_bytes=None, rate_hint=None, keep_locks=True,
-           meter=None):
+           meter=None, track_writes=False):
     if not paths:
         raise SvnError("No files selected")
     # --no-unlock: svn за замовчуванням знімає лок на коміті, і файл з
@@ -1012,7 +1043,8 @@ def commit(wc, paths, message, username=None, password=None, progress=None,
                     message=message, username=username, password=password,
                     timeout=None, extra=meter.svn_args() if meter else None,
                     notifier=_notifier(progress, "upload", total or len(paths),
-                                       wc, total_bytes, rate_hint, meter)
+                                       wc, total_bytes, rate_hint, meter,
+                                       track_writes)
                     if progress else None))
     m = re.search(r"Committed revision (\d+)", out)   # svn.exe завжди англійський
     if m:
@@ -1448,63 +1480,135 @@ def _fix_path(wc, shown):
     return rel
 
 
+class _Speed:
+    """Згладжена швидкість росту лічильника.
+
+    tau — за скільки секунд стара швидкість «забувається»: більше — спокійніше
+    число, але повільніше реагує. Заміри частіше ніж раз на 0.9 с не беремо:
+    інакше число смикається від кожного шматка.
+    """
+
+    def __init__(self, tau):
+        self.tau = tau
+        self.at = self.last = self.value = None
+
+    def feed(self, now, n):
+        if self.at is None or n < self.last:
+            self.at, self.last = now, n
+            return self.value
+        dt = now - self.at
+        if dt < 0.9:
+            return self.value
+        r = (n - self.last) / dt
+        a = 1.0 - math.exp(-dt / self.tau)
+        self.value = r if self.value is None else self.value + a * (r - self.value)
+        self.at, self.last = now, n
+        return self.value
+
+
+# Залишок часу передачі — не раніше, ніж за стільки секунд: перші заміри
+# випадкові, а перша оцінка лякає найбільше (здача 2026-10-02 показала «95 хв»
+# там, де вийшло кілька хвилин).
+ETA_AFTER = 3.0
+
+
 class _Notifier:
     """Перетворює вивід svn на поступ.
 
     Тримає і лічильник файлів (з рядків), і виміряну швидкість (з лічильників
     вводу-виводу процесу). Швидкість — справжня, а не похідна від вигаданої
     сталої, тому її можна показувати навіть там, де відсотків не буває.
+
+    Поступ самої передачі (фаза «send») — з одного з двох джерел, «basis»:
+      files   — скільки svn уже переписав у .svn, тобто як далеко він
+                просунувся по файлах (див. _io_counts). Головне джерело.
+      network — байти на трубі до сервера (meter.Meter), коли лічильників ОС
+                немає. Лише верхня межа: змінений файл їде різницею.
+    Байти на трубі, коли вони є, ідуть окремо («sent», «sent_rate») — щоб
+    показати, як іде мережа.
     """
 
     def __init__(self, cb, kind, total=None, wc=None, total_bytes=None,
-                 rate_hint=None, meter=None):
+                 rate_hint=None, meter=None, track_writes=False):
         self.cb, self.wc = cb, wc
-        # meter — лічильник байтів на трубі до сервера (meter.Meter): з ним
-        # фаза передачі має справжні відсотки, швидкість і залишок часу
         self.meter = meter
+        self.track = bool(track_writes and kind == "upload" and desktop.WINDOWS)
+        basis = "files" if self.track else "network" if meter is not None else None
         self.st = {"kind": kind, "phase": "start", "done": 0, "total": total,
                    "file": None, "bytes": None, "total_bytes": total_bytes,
                    "pct": None, "rate": None, "elapsed": 0, "eta": None,
-                   "measured": meter is not None}
+                   "sent": None, "sent_rate": None, "basis": basis,
+                   "measured": basis is not None}
         # rate_hint — швидкість, ЗАМІРЯНА на попередніх передачах цього ж
-        # користувача. Лічильники читань для цього не годяться: замір показав
-        # 2.00x обсягу для одного великого файлу і 1.00x для сотні дрібних,
-        # тобто множник залежить від форми коміту й наперед невідомий.
+        # користувача: лише для оцінки там, де поступ не виміряти.
         self.rate_hint = rate_hint
         self.started = time.monotonic()
-        self._prev = None            # (мить, лічильник)
+        self._prev = None            # (мить, прочитано) — швидкість без поступу
+        self._wrote = None           # скільки svn записав, останній замір
+        self._w0 = None              # ...коли почалась передача
+        self._send_at = None
+        # Просування по файлах — для залишку часу, двома швидкостями: змінений
+        # файл іде то швидко (незмінені шматки svn лише звіряє), то зі
+        # швидкістю мережі (змінені шле). Береться ПОВІЛЬНІША: коротка одразу
+        # ловить сповільнення, довга не дає залишку різко впасти на швидкому
+        # шматку. Коротка — справді коротка: з 2 с на переході від звіряння
+        # до мережі смуга обіцяла «3 с» там, де лишалось 10 (дослід із
+        # мережею 30 МБ/с); з 1 с оцінка сходиться за 2-3 заміри.
+        self._quick = _Speed(1.0)
+        self._steady = _Speed(8.0)
+        self._net = _Speed(2.0)      # байти на трубі — щоб показати мережу
+
+    def _pace(self):
+        q, s = self._quick.value, self._steady.value
+        return min(q, s) if q is not None and s is not None else q
+
+    def _pos(self):
+        """Як далеко svn просунувся в передачі (байти файлів)."""
+        if self.track:
+            if self._wrote is None or self._w0 is None:
+                return 0
+            return max(0, self._wrote - self._w0)
+        return self.meter.up if self.meter is not None else 0
 
     def push(self):
         st = self.st
-        st["elapsed"] = round(time.monotonic() - self.started, 1)
-        # Із лічильником на трубі передача — справжня: скільки байтів уже
-        # пішло до сервера, з якою швидкістю і скільки лишилось. Обсяг — сума
-        # розмірів файлів, тобто верхня межа: змінений файл svn може послати
-        # меншою різницею, тоді смуга просто скінчиться раніше. 99% — стеля до
-        # «Committing transaction»: решту робить уже сервер.
-        if self.meter is not None and st["phase"] == "send":
-            st["bytes"] = self.meter.up
-            tb = st["total_bytes"]
-            st["pct"] = min(99, int(100 * st["bytes"] / tb)) if tb else None
-            r = st["rate"]
-            st["eta"] = (max(0, round((tb - st["bytes"]) / r))
-                         if tb and r and r > 1024 and st["bytes"] < tb else None)
-            if st["total"] and st["done"] > st["total"]:
-                st["total"] = None
+        now = time.monotonic()
+        st["elapsed"] = round(now - self.started, 1)
+        # Якщо svn звітує більше, ніж ми очікували, значить наш підрахунок
+        # хибний. Тоді краще показати самий лічильник, ніж «файл 2062 з 1».
+        if st["total"] and st["done"] > st["total"]:
+            st["total"] = None
+        if st["measured"]:
+            if self.meter is not None:
+                st["sent"], st["sent_rate"] = self.meter.up, self._net.value
+            if st["phase"] in ("send", "finalize") and self._send_at is not None:
+                # 99% — стеля до «Committing transaction»: решту робить сервер.
+                # Більше за обсяг буває (файл перезберегли під час здачі, на
+                # трубі — ще й TLS), тоді смуга чекає на 99%, а не бреше 150%.
+                pos, tb = self._pos(), st["total_bytes"]
+                st["bytes"] = pos
+                st["rate"] = pace = self._pace()
+                if st["phase"] == "send":
+                    st["pct"] = min(99, int(100 * pos / tb)) if tb else None
+                    st["eta"] = (max(0, round((tb - pos) / pace))
+                                 if tb and pace and pace > 65536 and pos < tb
+                                 and now - self._send_at >= ETA_AFTER else None)
+                else:
+                    st["pct"] = st["eta"] = None
+            else:
+                st["pct"] = (min(100, round(100.0 * st["done"] / st["total"]))
+                             if st["total"] and st["phase"] in _COUNTING else None)
+                st["eta"] = None
             self.cb(dict(st))
             return
         # Залишок часу — тільки якщо є з чого його порахувати. Оцінка спирається
         # на заміряну раніше швидкість, тому подається як приблизна.
-        if (st["phase"] in ("send", "finalize", "prepare") and self.meter is None
+        if (st["phase"] in ("send", "finalize", "prepare")
                 and self.rate_hint and st["total_bytes"]):
             st["eta"] = max(0, round(st["total_bytes"] / self.rate_hint
                                      - st["elapsed"]))
         else:
             st["eta"] = None
-        # Якщо svn звітує більше, ніж ми очікували, значить наш підрахунок
-        # хибний. Тоді краще показати самий лічильник, ніж «файл 2062 з 1».
-        if st["total"] and st["done"] > st["total"]:
-            st["total"] = None
         # Відсотки лише там, де є що рахувати. На фазі передачі даних svn
         # мовчить, і показувати 100% було б брехнею.
         st["pct"] = (min(100, round(100.0 * st["done"] / st["total"]))
@@ -1527,8 +1631,17 @@ class _Notifier:
             st["file"] = _fix_path(self.wc, m.group(2).strip())
             st["phase"] = "prepare" if send else "files"
         elif line.startswith("Transmitting file data"):
+            # Цей рядок приходить двічі: недописаним на початку передачі й
+            # дописаним у кінці — часом уже після «Committing transaction».
+            # Назад із фінішу не повертаємось.
+            if st["phase"] == "finalize":
+                return
             st["phase"] = "send"
             st["file"] = None
+            if self._send_at is None:
+                self._send_at = time.monotonic()
+                # усе, що svn записав досі (кілька КБ у wc.db), — не передача
+                self._w0 = self._wrote if self._wrote is not None else 0
         elif line.startswith("Committing transaction"):
             st["phase"] = "finalize"
             st["file"] = None
@@ -1536,31 +1649,39 @@ class _Notifier:
             return
         self.push()
 
-    def io(self, nbytes):
-        if self.meter is not None:
-            # швидкість — з байтів на трубі, а не з читань диска (ті 1-2.9x)
-            nbytes = self.meter.up
-        elif nbytes is None:
-            return
+    def io(self, counts):
+        """counts — (прочитано, записано) процесом svn або None (мак)."""
         now = time.monotonic()
+        if self.st["measured"]:
+            if counts is not None:
+                self._wrote = counts[1]
+            if self._send_at is not None and self.st["phase"] == "send":
+                pos = self._pos()
+                self._quick.feed(now, pos)
+                self._steady.feed(now, pos)
+            if self.meter is not None:
+                self._net.feed(now, self.meter.up)
+            self.push()
+            return
+        # Без поступу — лише швидкість роботи, з прочитаного
+        nbytes = counts[0] if counts else None
+        if nbytes is None:
+            return
         if self._prev is None:
             self._prev = (now, nbytes)
             return
         dt = now - self._prev[0]
         if dt < 0.9:                 # згладжуємо, інакше число смикається
             return
-        r = max(0.0, (nbytes - self._prev[1]) / dt)
-        old = self.st["rate"]
-        # з лічильником згладжуємо: залишок часу інакше стрибав би щосекунди
-        self.st["rate"] = (r if old is None or self.meter is None
-                           else old * 0.6 + r * 0.4)
+        self.st["rate"] = max(0.0, (nbytes - self._prev[1]) / dt)
         self._prev = (now, nbytes)
         self.push()
 
 
 def _notifier(cb, kind, total=None, wc=None, total_bytes=None,
-              rate_hint=None, meter=None):
-    return _Notifier(cb, kind, total, wc, total_bytes, rate_hint, meter)
+              rate_hint=None, meter=None, track_writes=False):
+    return _Notifier(cb, kind, total, wc, total_bytes, rate_hint, meter,
+                     track_writes)
 
 
 def _watch_size(dest, total, cb, kind="download"):

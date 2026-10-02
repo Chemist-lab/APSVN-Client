@@ -3,6 +3,12 @@
 
 Без мережі: «сервер» тут — локальний сокет. Справжній svn через тунель до
 живого сервера перевіряє test_live.py (лише читання).
+
+Смуга здачі стоїть на тому, скільки svn уже записав у .svn (sc._io_counts):
+дослід 2026-10-02 на локальному svnserve дав рівно 1.00x розміру файлу для
+нового, зміненого частково й зміненого цілком. svnserve у збірку не входить,
+тож тут — розрахунки поступу й наскрізна перевірка на file://, де svn.exe пише
+ще й у сховище (тому там «не менше», а не «рівно»).
 """
 import getpass
 import os
@@ -233,7 +239,7 @@ g.stop()
 
 print()
 print("=" * 64)
-print("4. Поступ здачі з лічильника: відсотки, швидкість, залишок")
+print("4. Поступ здачі: смуга — за файлами, мережа — окремо")
 print("=" * 64)
 
 
@@ -241,37 +247,92 @@ class Fake:
     up = 0
 
 
+def age(n, secs):
+    """Зсунути «останній замір» швидкостей на secs у минуле."""
+    for sp in (n._quick, n._steady, n._net):
+        if sp.at is not None:
+            sp.at -= secs
+
+
 fake = Fake()
 seen = []
-n = sc._notifier(seen.append, "upload", total=2, total_bytes=100 * MB, meter=fake)
+n = sc._notifier(seen.append, "upload", total=2, total_bytes=100 * MB, meter=fake,
+                 track_writes=True)
+check("смуга за файлами (лічильники ОС є)", seen == [] and n.st["basis"] == "files"
+      and n.st["measured"], n.st)
+n.io((0, 40000))                             # wc.db, локи — ще не передача
 n.line("Sending        a.blend")
 n.line("Adding  (bin)  b.png")
 check("перелік файлів — як і був (N з M)", seen[-1]["phase"] == "prepare" and
       seen[-1]["pct"] == 100, seen[-1])
 n.line("Transmitting file data")
-check("передача з лічильником — є відсоток", seen[-1]["phase"] == "send" and
-      seen[-1]["pct"] == 0 and seen[-1]["measured"], seen[-1])
-n.io(None)                                   # перша мітка
-n._prev = (time.monotonic() - 1.0, 0)
-fake.up = 10 * MB
-n.io(None)
+check("початок передачі — 0%, а записане досі не рахується",
+      seen[-1]["phase"] == "send" and seen[-1]["pct"] == 0 and seen[-1]["bytes"] == 0,
+      seen[-1])
+n.io((0, 40000))                             # перша мітка швидкостей
+n._send_at -= 1.0
+age(n, 1.0)
+fake.up = 1 * MB                             # мережею — лише різниця
+n.io((0, 40000 + 10 * MB))
 e = seen[-1]
-check("10 МБ зі 100 — 10%", e["pct"] == 10 and e["bytes"] == 10 * MB, e)
-check("швидкість — з байтів на трубі", e["rate"] and abs(e["rate"] - 10 * MB) < MB, e["rate"])
-check("залишок — з цієї швидкості (~9 с)", e["eta"] in (8, 9, 10), e["eta"])
-n._prev = (time.monotonic() - 1.0, fake.up)
-fake.up = 150 * MB                           # TLS і заголовки зверху обсягу файлів
-n.io(None)
-check("більше за обсяг файлів — 99%, а не 150% (решта — на сервері)",
-      seen[-1]["pct"] == 99 and seen[-1]["eta"] is None, seen[-1])
+check("10 МБ файлу зі 100 — 10%, хоч мережею пішов 1 МБ",
+      e["pct"] == 10 and e["bytes"] == 10 * MB and e["sent"] == 1 * MB, e)
+check("перші секунди — без залишку часу (перша оцінка лякає найбільше)",
+      e["eta"] is None, e["eta"])
+n._send_at -= 5.0
+age(n, 1.0)
+n.io((0, 40000 + 20 * MB))
+e = seen[-1]
+check("далі залишок — з того, як svn іде по файлах (80 МБ / 10 МБ/с ≈ 8 с)",
+      e["eta"] in (7, 8, 9), e["eta"])
+check("швидкість мережі — окремо, з байтів на трубі",
+      e["sent_rate"] is not None and e["sent_rate"] < 2 * MB, e["sent_rate"])
+eta_fast = e["eta"]
+age(n, 1.0)
+n.io((0, 40000 + 21 * MB))                  # почались змінені шматки: 1 МБ/с
+e = seen[-1]
+check("svn сповільнився — залишок одразу росте, а не обіцяє старе",
+      e["eta"] is not None and e["eta"] > 2 * eta_fast, (eta_fast, e["eta"]))
+age(n, 1.0)
+n.io((0, 40000 + 130 * MB))                 # файл перезберегли більшим
+e = seen[-1]
+check("більше за обсяг — 99%, без залишку, а не 130%",
+      e["pct"] == 99 and e["eta"] is None and e["bytes"] == 130 * MB, e)
 n.line("Committing transaction")
 check("«Committing transaction» — уже без відсотків", seen[-1]["phase"] == "finalize"
       and seen[-1]["pct"] is None and seen[-1]["eta"] is None, seen[-1])
+n.line("Transmitting file data ....done")    # хвіст рядка приходить пізніше
+check("дописаний рядок передачі не повертає з фінішу назад",
+      seen[-1]["phase"] == "finalize", seen[-1]["phase"])
+n.io((0, 40000 + 131 * MB))
+check("останній замір після передачі теж доходить (для журналу)",
+      seen[-1]["bytes"] == 131 * MB, seen[-1]["bytes"])
+n.io(None)
+check("лічильників раптом нема — поступ не падає", seen[-1]["bytes"] == 131 * MB)
+
+seen.clear()
+fake.up = 0
+net = sc._notifier(seen.append, "upload", total=1, total_bytes=100 * MB, meter=fake)
+net.line("Transmitting file data")
+net.io(None)
+net._send_at -= 5.0
+age(net, 1.0)
+fake.up = 30 * MB
+net.io(None)
+e = seen[-1]
+check("без лічильників ОС — смуга за байтами на трубі, як раніше",
+      e["basis"] == "network" and e["pct"] == 30 and e["bytes"] == 30 * MB and
+      e["eta"] in (2, 3), e)
+
+seen.clear()
 old = sc._notifier(seen.append, "upload", total=1, total_bytes=100 * MB, rate_hint=5 * MB)
 old.line("Transmitting file data")
-check("без лічильника — як раніше: без відсотків, оцінка за історією",
+check("без лічильника й без записаного — як раніше: без відсотків, оцінка за історією",
       seen[-1]["pct"] is None and seen[-1]["eta"] is not None and not seen[-1]["measured"],
       seen[-1])
+dl = sc._notifier(seen.append, "download", total=3, track_writes=True)
+check("записане — лише для здачі (на качанні svn пише сам файл)",
+      dl.st["basis"] is None and not dl.st["measured"], dl.st)
 
 print()
 print("=" * 64)
@@ -316,7 +377,9 @@ sc.add(wc, ["a.txt"])
 api.do_commit(["a.txt"], "перша здача")
 
 calls = []
-real_commit, real_for = sc.commit, app.Api._meter_for
+# сам staticmethod, а не функцію з нього: інакше, повернута в клас, вона
+# стане звичайним методом і наступна здача впаде на зайвому self
+real_commit, real_for = sc.commit, app.Api.__dict__["_meter_for"]
 
 
 def fake_commit(*a, **kw):
@@ -378,6 +441,105 @@ try:
         check("дійшов і впав миттєво — теж без другої спроби", len(calls) == 1, calls)
 finally:
     sc.commit, app.Api._meter_for = real_commit, real_for
+
+print()
+print("=" * 64)
+print("6. Здача: обсяг передачі, підсумок, журнал")
+print("=" * 64)
+with open(os.path.join(wc, "old.bin"), "wb") as fh:
+    fh.write(os.urandom(3 * MB))
+sc.add(wc, ["old.bin"])
+api.do_commit(["old.bin"], "старий файл")
+sc.remove(wc, ["old.bin"])                    # видалено, але лежить на диску
+check("видалений лежить на диску до кінця здачі",
+      os.path.isfile(os.path.join(wc, "old.bin")))
+with open(os.path.join(wc, "new.bin"), "wb") as fh:
+    fh.write(os.urandom(1 * MB))
+kws = []
+
+
+def spy(*a, **kw):
+    kws.append(kw)
+    return real_commit(*a, **kw)
+
+
+sc.commit = spy
+try:
+    out = api.do_commit(["old.bin", "new.bin"], "заміна")
+finally:
+    sc.commit = real_commit
+check("здано", sc.COMMIT_RE.search(out), out)
+check("обсяг передачі — лише новий файл (видалений не їде)",
+      kws and kws[0]["total_bytes"] == 1 * MB, kws and kws[0]["total_bytes"])
+check("на file:// записане не рахуємо (svn.exe пише ще й у сховище)",
+      kws and kws[0]["track_writes"] is False, kws and kws[0]["track_writes"])
+
+
+class Gauge:
+    up, conns = 20 * MB, 1
+
+    def stop(self):
+        pass
+
+
+with open(os.path.join(wc, "scene.blend"), "wb") as fh:
+    fh.write(bytes(70 * MB))
+kws.clear()
+
+
+def done_fake(*a, **kw):
+    kws.append(kw)
+    kw["progress"]({"kind": "upload", "phase": "finalize", "basis": "files",
+                    "bytes": 70 * MB, "total_bytes": 70 * MB})
+    return "Sent. This is commit 99 — your team can see your work now."
+
+
+sc.commit = done_fake
+app.Api._meter_for = staticmethod(lambda u: Gauge())
+api.c["url"] = "https://svn.studio.test/svn/demo"
+try:
+    out = api.do_commit(["scene.blend"], "велика сцена")
+finally:
+    sc.commit, app.Api._meter_for = real_commit, real_for
+    api.c["url"] = url
+check("на https смуга — за записаним", kws and kws[0]["track_writes"] is True,
+      kws and kws[0]["track_writes"])
+check("підсумок: обсяг, час і скільки справді вивантажено",
+      "70.0 MB in" in out and "20.0 MB uploaded" in out, out)
+with open(app.ACTIVITY, encoding="utf-8") as fh:
+    log = fh.read()
+check("у журналі — скільки svn пройшов по файлах і скільки пішло мережею",
+      "submit r99: 70.0 MB" in log and "(1.00x)" in log and "uploaded 20.0 MB" in log,
+      log.strip().splitlines()[-1:])
+
+print()
+print("=" * 64)
+print("7. Наскрізно: справжній svn, записане доходить до смуги")
+print("=" * 64)
+if not sc.desktop.WINDOWS:
+    print("  (лічильники процесу є лише у Windows — пропущено)")
+else:
+    # такий, щоб здача тривала кілька замірів (вони — раз на 0.5 с)
+    BIG = 192 * MB
+    chunk = os.urandom(MB)
+    with open(os.path.join(wc, "big.bin"), "wb") as fh:
+        for i in range(BIG // MB):
+            fh.write(chunk[i:] + chunk[:i])
+    sc.add(wc, ["big.bin"])
+    ev = []
+    out = sc.commit(wc, ["big.bin"], "великий", progress=lambda e: ev.append(dict(e)),
+                    total=1, total_bytes=BIG, track_writes=True)
+    check("здано", sc.COMMIT_RE.search(out), out)
+    send = [e for e in ev if e["phase"] == "send"]
+    pcts = [e["pct"] for e in send]
+    check("передача видна відсотками за файлами", send and all(
+        e["basis"] == "files" and e["pct"] is not None for e in send), pcts)
+    check("смуга рухається по ходу, а не стрибає з 0 у кінець",
+          any(0 < x < 99 for x in pcts), pcts)
+    check("смуга лише росте й не перескакує 99%",
+          pcts == sorted(pcts) and max(pcts or [0]) <= 99, pcts)
+    check("наприкінці svn пройшов увесь файл (на file:// — і більше: ще й сховище)",
+          ev and ev[-1]["bytes"] >= BIG, ev and ev[-1]["bytes"])
 
 import shutil  # noqa: E402
 shutil.rmtree(base, ignore_errors=True)

@@ -59,12 +59,17 @@ ACTIVITY = os.path.join(CONF_DIR, "apsvn.log")   # тихі фонові спр�
 
 
 def activity(line):
-    """Рядок у журнал фонових справ. Не більше мегабайта: старе — в .1."""
+    """Рядок у журнал фонових справ. Не більше мегабайта: старе — в .1.
+
+    Шлях — від CONF_DIR у мить запису, а не від імпорту: тести переводять
+    CONF_DIR у тимчасову теку, і їхні рядки інакше осідали б у справжньому
+    журналі людини."""
+    path = os.path.join(CONF_DIR, "apsvn.log")
     try:
         os.makedirs(CONF_DIR, exist_ok=True)
-        if os.path.isfile(ACTIVITY) and os.path.getsize(ACTIVITY) > 1 << 20:
-            os.replace(ACTIVITY, ACTIVITY + ".1")
-        with open(ACTIVITY, "a", encoding="utf-8") as fh:
+        if os.path.isfile(path) and os.path.getsize(path) > 1 << 20:
+            os.replace(path, path + ".1")
+        with open(path, "a", encoding="utf-8") as fh:
             fh.write("%s  %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), line))
     except OSError:
         pass
@@ -1772,9 +1777,13 @@ class Api:
                     # завадив саме він (жодної транзакції ще не почато), тож
                     # здаємо ще раз напряму, як було до лічильника. Дійшов —
                     # помилка справжня (хук, «застаріло», мережа), її й кажемо.
-                    if gauge is None or gauge.conns:
+                    # Спершу зупинити тунель: свої цифри він звітує раз на
+                    # 0.2 с, і швидка відмова інакше читалася б як «не дійшов».
+                    if gauge is None:
                         raise
                     gauge.stop()
+                    if gauge.conns:
+                        raise
                     activity("submit: the upload meter did not reach the "
                              "server — sent directly")
                     gauge = None

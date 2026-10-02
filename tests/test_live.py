@@ -197,6 +197,7 @@ else:
                       timeout=120, extra=gauge.svn_args())
         check("svn через лічильник: вхід і відповідь сервера — як напряму",
               b"-----" in out, len(out))
+        gauge.stop()                 # дочитати останні цифри з окремого процесу
         check("тунель дійшов саме до сервера проєкту і порахував обидва боки",
               gauge.conns >= 1 and gauge.up > 0 and gauge.down > 0 and not gauge.refused,
               (gauge.conns, gauge.up, gauge.down, gauge.refused))

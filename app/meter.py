@@ -9,19 +9,31 @@ OtherTransferCount показав 7 КБ). Тому APSVN на час здачі
 що йдуть у бік сервера. svn вмикає його своїм же параметром лише для цієї
 команди (servers:global:http-proxy-*), системних налаштувань ніхто не чіпає.
 
-Чого він НЕ робить і не може:
+ТУНЕЛЬ — ОКРЕМИЙ ПРОЦЕС, і це не прикраса. Перша версія жила в процесі
+програми й на справжній здачі дала 1.7 МБ/с замість звичних ~20: потоки Python
+в одному процесі ділять GIL, і тунель після кожного шматка (запис TLS — до
+16 КБ) чекав своєї черги за вікном і мостом до нього. Дослід: той самий тунель
+у процесі з одним зайнятим Python-потоком — 6.7 МБ/с замість 2 ГБ/с. В окремому
+процесі ділити нічого, і він дає те, що вміє мережа (живий тест: 37-44 МБ/с).
+Програма лише читає від нього рядки «скільки пройшло» кілька разів на секунду.
+
+Чого тунель НЕ робить і не може:
   * не бачить вмісту — TLS лишається наскрізним між svn і сервером, через
     тунель їдуть уже зашифровані байти (файли, пароль — нічого не видно);
   * не пускає нікуди, крім сервера проєкту, і лише з цього ж комп'ютера;
   * не подвоює трафік: ділянка svn -> тунель іде всередині машини (loopback),
     назовні байти виходять один раз.
-Коштує ~4% одного ядра на кожні 100 МБ/с (замір: 3 ГіБ за 1.4 с).
 """
+import os
 import socket
+import subprocess
+import sys
 import threading
 
-BUF = 256 * 1024
+BUF = 1024 * 1024
 HEAD_MAX = 16 * 1024
+SOCK_BUF = 4 * 1024 * 1024
+STAT_EVERY = 0.2          # с: як часто тунель каже, скільки пройшло
 
 
 def _host_port(target):
@@ -33,8 +45,24 @@ def _host_port(target):
     return (host, int(port)) if host else None
 
 
-class Meter:
-    """CONNECT-тунель на 127.0.0.1, що рахує байти. Лише до host:port."""
+def _setopts(s):
+    """Без затримки Nagle й із великими буферами: тунель лише перекладає
+    байти, тож чекати, «поки назбирається», йому ні до чого."""
+    for level, opt, val in ((socket.IPPROTO_TCP, socket.TCP_NODELAY, 1),
+                            (socket.SOL_SOCKET, socket.SO_SNDBUF, SOCK_BUF),
+                            (socket.SOL_SOCKET, socket.SO_RCVBUF, SOCK_BUF)):
+        try:
+            s.setsockopt(level, opt, val)
+        except OSError:
+            pass
+
+
+class Relay:
+    """Сам тунель: CONNECT на 127.0.0.1, що рахує байти. Лише до host:port.
+
+    Живе в ОКРЕМОМУ процесі (див. шапку); тут, у класі, — уся робота, щоб її
+    можна було перевірити й напряму, без процесу.
+    """
 
     def __init__(self, host, port):
         self.allow = (str(host).strip("[]").lower(), int(port))
@@ -52,11 +80,6 @@ class Meter:
         threading.Thread(target=self._accept, daemon=True,
                          name="apsvn-meter").start()
 
-    def svn_args(self):
-        """Як сказати svn іти саме через цей тунель — лише для однієї команди."""
-        return ["--config-option", "servers:global:http-proxy-host=127.0.0.1",
-                "--config-option", "servers:global:http-proxy-port=%d" % self.port]
-
     def stop(self):
         """Закрити вхід і всі тунелі. Безпечно кликати кілька разів."""
         with self._lock:
@@ -69,7 +92,6 @@ class Meter:
             except OSError:
                 pass
 
-    # --- нутрощі ------------------------------------------------------------
     def _keep(self, s):
         with self._lock:
             if self._stopped:
@@ -99,7 +121,7 @@ class Meter:
             try:
                 c, _ = self._srv.accept()
             except OSError:
-                return                      # вхід закрито — лічильник зупинено
+                return                      # вхід закрито — тунель зупинено
             if not self._keep(c):
                 self._drop(c)
                 return
@@ -139,8 +161,9 @@ class Meter:
             if not self._keep(s):
                 self._drop(c, s)
                 return
-            c.settimeout(None)
-            s.settimeout(None)
+            for x in (c, s):
+                x.settimeout(None)
+                _setopts(x)
             with self._lock:
                 self.conns += 1
             c.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
@@ -176,3 +199,122 @@ class Meter:
             b.shutdown(socket.SHUT_WR)
         except OSError:
             pass
+
+
+# --- окремий процес -----------------------------------------------------------
+def _serve(host, port):
+    """Тіло дочірнього процесу: тунель + рядки «скільки пройшло» в stdout.
+
+    Кінець stdin — сигнал зупинитись: батько закрив трубу або сам упав, і тоді
+    тунель не лишиться висіти сиротою.
+    """
+    relay = Relay(host, port)
+    out = sys.stdout
+    out.write("PORT %d\n" % relay.port)
+    out.flush()
+    done = threading.Event()
+
+    def watch():
+        try:
+            sys.stdin.buffer.read()
+        except Exception:
+            pass
+        done.set()
+
+    threading.Thread(target=watch, daemon=True).start()
+    last = (0, 0, 0, 0)
+
+    def say():
+        cur = (relay.up, relay.down, relay.conns, relay.refused)
+        nonlocal last
+        if cur != last:
+            out.write("STAT %d %d %d %d\n" % cur)
+            out.flush()
+            last = cur
+
+    try:
+        while not done.wait(STAT_EVERY):
+            say()
+    finally:
+        relay.stop()
+        try:
+            say()
+        except Exception:
+            pass
+
+
+def _python():
+    """Чим запустити тунель: python.exe поруч із pythonw.exe програми (з ним
+    рядки в stdout надійні), без вікна консолі — прапорцем при запуску."""
+    exe = sys.executable or "python"
+    if os.path.basename(exe).lower() == "pythonw.exe":
+        alt = os.path.join(os.path.dirname(exe), "python.exe")
+        if os.path.isfile(alt):
+            return alt
+    return exe
+
+
+class Meter:
+    """Тунель в окремому процесі. Для решти програми — ті самі поля й методи:
+    up, down, conns, refused, port, svn_args(), stop()."""
+
+    START_TIMEOUT = 10
+
+    def __init__(self, host, port):
+        self.allow = (str(host).strip("[]").lower(), int(port))
+        self.up = self.down = self.conns = self.refused = 0
+        self.port = None
+        kw = {}
+        if sys.platform == "win32":
+            kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        self._p = subprocess.Popen(
+            [_python(), "-u", os.path.abspath(__file__), "--serve",
+             self.allow[0], str(self.allow[1])],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, **kw)
+        killer = threading.Timer(self.START_TIMEOUT, self._kill)
+        killer.start()
+        try:
+            first = self._p.stdout.readline().decode("ascii", "replace").split()
+        finally:
+            killer.cancel()
+        if len(first) != 2 or first[0] != "PORT" or not first[1].isdigit():
+            self._kill()
+            raise OSError("the upload meter did not start")
+        self.port = int(first[1])
+        self._reader = threading.Thread(target=self._read, daemon=True,
+                                        name="apsvn-meter-read")
+        self._reader.start()
+
+    def _read(self):
+        for raw in self._p.stdout:
+            parts = raw.decode("ascii", "replace").split()
+            if len(parts) == 5 and parts[0] == "STAT" and all(x.isdigit() for x in parts[1:]):
+                self.up, self.down, self.conns, self.refused = map(int, parts[1:])
+
+    def _kill(self):
+        try:
+            self._p.kill()
+        except OSError:
+            pass
+
+    def svn_args(self):
+        """Як сказати svn іти саме через цей тунель — лише для однієї команди."""
+        return ["--config-option", "servers:global:http-proxy-host=127.0.0.1",
+                "--config-option", "servers:global:http-proxy-port=%d" % self.port]
+
+    def stop(self):
+        """Зупинити тунель і дочитати останні цифри. Безпечно кликати двічі."""
+        try:
+            self._p.stdin.close()
+        except (OSError, ValueError):
+            pass
+        try:
+            self._p.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self._kill()
+        self._reader.join(timeout=2)
+
+
+if __name__ == "__main__" and len(sys.argv) == 4 and sys.argv[1] == "--serve":
+    _serve(sys.argv[2], int(sys.argv[3]))

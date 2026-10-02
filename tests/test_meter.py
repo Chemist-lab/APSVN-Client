@@ -93,11 +93,24 @@ def tunnel(g, target, payload=b"", chunk=1 << 20):
     return status, back
 
 
+def settle(g, timeout=3.0):
+    """Окремий процес звітує раз на 0.2 с — дочекатись, поки цифри встоять."""
+    end = time.time() + timeout
+    last = None
+    while time.time() < end:
+        cur = (g.up, g.down, g.conns, g.refused)
+        if cur == last:
+            return cur
+        last = cur
+        time.sleep(0.45)
+    return last
+
+
 print("=" * 64)
 print("1. Тунель: точний підрахунок, відповідь після кінця запису")
 print("=" * 64)
 sink = Sink()
-g = meter.Meter("127.0.0.1", sink.port)
+g = meter.Relay("127.0.0.1", sink.port)
 data = os.urandom(64 * MB)
 t0 = time.perf_counter()
 status, back = tunnel(g, b"127.0.0.1:%d" % sink.port, data)
@@ -126,10 +139,6 @@ s.close()
 check("відмови пораховано, а до сервера ніхто зайвий не дійшов",
       g.refused == 3 and g.conns == 1, (g.refused, g.conns))
 check("слухає лише 127.0.0.1", g._srv.getsockname()[0] == "127.0.0.1")
-check("параметр для svn — лише на цю команду",
-      g.svn_args() == ["--config-option", "servers:global:http-proxy-host=127.0.0.1",
-                       "--config-option",
-                       "servers:global:http-proxy-port=%d" % g.port])
 for raw, want in (("svn.example.com:443", ("svn.example.com", 443)),
                   ("SVN.Example.com:443", ("svn.example.com", 443)),
                   ("[::1]:8443", ("::1", 8443)), ("host", None), (":443", None)):
@@ -137,16 +146,72 @@ for raw, want in (("svn.example.com:443", ("svn.example.com", 443)),
 
 print()
 print("=" * 64)
-print("3. Кілька тунелів разом і зупинка")
+print("3. Окремий процес: ті самі цифри, кілька тунелів, зупинка")
 print("=" * 64)
 g2 = meter.Meter("127.0.0.1", sink.port)
+check("параметр для svn — лише на цю команду",
+      g2.svn_args() == ["--config-option", "servers:global:http-proxy-host=127.0.0.1",
+                        "--config-option",
+                        "servers:global:http-proxy-port=%d" % g2.port])
 res = []
 ths = [threading.Thread(target=lambda: res.append(
     tunnel(g2, b"127.0.0.1:%d" % sink.port, os.urandom(8 * MB)))) for _ in range(3)]
 [t.start() for t in ths]
 [t.join() for t in ths]
-check("три тунелі разом — лічильник складає", g2.up == 24 * MB and g2.conns == 3,
-      (g2.up, g2.conns))
+settle(g2)
+check("три тунелі разом — цифри з окремого процесу складаються",
+      g2.up == 24 * MB and g2.conns == 3, (g2.up, g2.conns))
+tunnel(g2, b"example.com:443")
+settle(g2)
+check("…і відмова звідти теж видна", g2.refused == 1, g2.refused)
+
+# Головне, заради чого процес окремий: зайнятий Python-потік у програмі
+# (вікно, міст до нього) тунелю не гальмує. У тому ж процесі він душив тунель
+# до 6.7 МБ/с — так перша версія й дала художнику 1.7 МБ/с замість ~20.
+SINK2 = r"""
+import socket, sys
+s = socket.socket(); s.bind(("127.0.0.1", 0)); s.listen(1)
+print(s.getsockname()[1], flush=True)
+c, _ = s.accept()
+buf = bytearray(1 << 20)
+while c.recv_into(buf):
+    pass
+"""
+SEND = r"""
+import socket, sys, time
+port, target = int(sys.argv[1]), sys.argv[2].encode()
+s = socket.create_connection(("127.0.0.1", port))
+s.sendall(b"CONNECT " + target + b" HTTP/1.1\r\n\r\n")
+h = b""
+while b"\r\n\r\n" not in h:
+    h += s.recv(4096)
+data = bytes(16 * 1024); total = 128 * 1024 * 1024; t0 = time.perf_counter(); sent = 0
+while sent < total:
+    s.sendall(data); sent += len(data)
+s.close()
+print("%.1f" % (total / (time.perf_counter() - t0) / 2**20))
+"""
+sp = subprocess.Popen([sys.executable, "-c", SINK2], stdout=subprocess.PIPE, text=True)
+far = int(sp.stdout.readline())
+g3 = meter.Meter("127.0.0.1", far)
+spin_stop = threading.Event()
+
+
+def spin():
+    x = 0
+    while not spin_stop.is_set():
+        x += 1
+
+
+threading.Thread(target=spin, daemon=True).start()
+r = subprocess.run([sys.executable, "-c", SEND, str(g3.port), "127.0.0.1:%d" % far],
+                   capture_output=True, text=True)
+spin_stop.set()
+g3.stop()
+sp.wait(timeout=10)
+speed = float(r.stdout.strip() or 0)
+check("зайнятий потік у програмі тунель не гальмує (було 6.7 МБ/с)", speed > 100,
+      "%.0f МБ/с" % speed)
 hold = socket.create_connection(("127.0.0.1", g2.port))
 hold.sendall(b"CONNECT 127.0.0.1:%d HTTP/1.1\r\n\r\n" % sink.port)
 hold.recv(100)
@@ -163,6 +228,7 @@ try:
     check("після зупинки вхід закрито", False)
 except OSError:
     check("після зупинки вхід закрито", True)
+check("…і процес тунелю завершився", g2._p.poll() is not None, g2._p.poll())
 g.stop()
 
 print()
@@ -287,6 +353,29 @@ try:
     except sc.SvnError:
         check("дійшов до сервера й упав — помилка справжня, другої спроби немає",
               len(calls) == 1, calls)
+
+    # Дійшов і впав ШВИДШЕ, ніж тунель устиг звітувати (звіт — раз на 0.2 с):
+    # рішення «не дійшов» мусить ухвалюватись після зупинки тунелю, з його
+    # останніми цифрами, а не з нулями, що ще не оновились.
+    calls.clear()
+    app.Api._meter_for = staticmethod(lambda u: meter.Meter("127.0.0.1", sink.port))
+
+    def quick_fail(*a, **kw):
+        calls.append(kw.get("meter"))
+        g = kw.get("meter")
+        if g is not None:
+            tunnel(g, b"127.0.0.1:%d" % sink.port, b"x" * 10)
+            raise sc.SvnError("svn: E160028: File is out of date")
+        return real_commit(*a, **kw)
+
+    sc.commit = quick_fail
+    with open(os.path.join(wc, "a.txt"), "w", encoding="utf-8") as fh:
+        fh.write("четверта")
+    try:
+        api.do_commit(["a.txt"], "четверта здача")
+        check("дійшов і впав миттєво — теж без другої спроби", False)
+    except sc.SvnError:
+        check("дійшов і впав миттєво — теж без другої спроби", len(calls) == 1, calls)
 finally:
     sc.commit, app.Api._meter_for = real_commit, real_for
 

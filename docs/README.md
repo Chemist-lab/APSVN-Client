@@ -470,7 +470,7 @@ part of the root, with the code in `Resources/app`.
 | `blender.py`    | which Blender opens a scene: the studio's version, found on this machine |
 | `blendthumb.py` | preview embedded in a `.blend` |
 | `imgthumb.py`   | previews for png/jpg/tga/exr |
-| `tests/`        | 885 checks without a server, up to 26 more (read-only) against the real one |
+| `tests/`        | 889 checks without a server, up to 26 more (read-only) against the real one |
 
 Settings live in `%APPDATA%\APSVN\config.json`, format 2:
 `{"format":2, "projects":[…], "current":"<id>", …mirror of the current one…}`.
@@ -1126,7 +1126,17 @@ behind decisions that look odd until you know why.
   difference, and then the bar simply ends early; it stops at 99% until
   *Committing transaction*, where the rest is the server's. The cost is about
   4% of one core per 100 MB/s (3 GiB through the tunnel in 1.4 s); traffic
-  does not double — the svn → tunnel leg never leaves the machine. Only for
+  does not double — the svn → tunnel leg never leaves the machine. **The
+  tunnel is a separate process**, and that is not decoration: the first
+  version lived inside the program and gave an artist 1.7 MB/s instead of the
+  usual ~20 — Python threads in one process share the GIL, and after every
+  chunk (a TLS record, up to 16 KB) the tunnel waited its turn behind the
+  window and its bridge. Measured: the same tunnel next to one busy Python
+  thread did 6.7 MB/s instead of 2 GB/s; as its own process, 2.5 GB/s with the
+  same busy thread, and on the live server 137 MB/s (direct: 167). The
+  program only reads its “so much has gone” lines a few times a second; a
+  failure is judged after the tunnel is stopped and its last numbers read,
+  never from a report that has not arrived yet. Only for
   https; a tunnel that cannot open means a submit straight to the server, as
   before. And if svn did not reach the server through the tunnel at all
   (no tunnel opened — no transaction started), the submit is retried directly
@@ -1261,7 +1271,7 @@ decision, not a gap.
 
 ### Tests
 
-Without a server — 885 checks against a temporary `file://` repository (and,
+Without a server — 889 checks against a temporary `file://` repository (and,
 for the studio server, a fake one on `127.0.0.1`); they leave nothing behind:
 
 ```bash

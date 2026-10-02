@@ -466,10 +466,11 @@ part of the root, with the code in `Resources/app`.
 | `svn/`          | SlikSvn 1.14.5 (Subversion CLI, Apache-2.0), the VC++ runtime it needs, its licences |
 | `explorer.py`   | the Explorer: one folder at a time |
 | `finder.py`     | search: the whole project by name, commits by file, note or author |
+| `meter.py`      | the submit progress: a byte meter on the pipe to the server |
 | `blender.py`    | which Blender opens a scene: the studio's version, found on this machine |
 | `blendthumb.py` | preview embedded in a `.blend` |
 | `imgthumb.py`   | previews for png/jpg/tga/exr |
-| `tests/`        | 849 checks without a server, up to 24 more (read-only) against the real one |
+| `tests/`        | 885 checks without a server, up to 26 more (read-only) against the real one |
 
 Settings live in `%APPDATA%\APSVN\config.json`, format 2:
 `{"format":2, "projects":[…], "current":"<id>", …mirror of the current one…}`.
@@ -1107,11 +1108,30 @@ behind decisions that look odd until you know why.
   as recognising its layout.
 * **Progress is only shown where it was actually measured.** Downloading one
   version is exact — the size is known in advance and the temporary file can be
-  watched. Uploading is not: svn prints nothing while sending, and its read
-  counters come to 1.0–2.0× the payload depending on the shape of the commit,
-  so a percentage there would be invented. The remaining time for an upload is
-  an estimate from throughput measured on this user's earlier transfers, and it
-  is marked `≈`.
+  watched. Uploading used not to be: svn prints nothing while sending (the dots
+  in “Transmitting file data” come one per 64 MB), its read counters come to
+  1.0–2.9× the payload, and the process I/O counters do not see network
+  traffic at all (2026-10-02: svn downloaded ~17 KB, `OtherTransferCount`
+  showed 7 KB). So a percentage there would have been invented.
+* **Submit has a real progress bar: a byte meter on the pipe to the server.**
+  For the duration of a submit APSVN opens a CONNECT tunnel on `127.0.0.1`
+  (`app/meter.py`) and tells svn to go through it with its own option, for
+  that one command only (`servers:global:http-proxy-*`). TLS stays end to end
+  between svn and the server — the tunnel moves encrypted bytes and sees
+  neither the files nor the password — and it lets through only the
+  project's own server. What it counts towards the server is the progress:
+  *Sending — 1.2 GB of 3.4 GB (35%) · 85 MB/s · 25s left*, with the speed and
+  the remaining time from this transfer, not from history. The total is the
+  sum of the files' sizes, an upper bound: a changed file may go as a smaller
+  difference, and then the bar simply ends early; it stops at 99% until
+  *Committing transaction*, where the rest is the server's. The cost is about
+  4% of one core per 100 MB/s (3 GiB through the tunnel in 1.4 s); traffic
+  does not double — the svn → tunnel leg never leaves the machine. Only for
+  https; a tunnel that cannot open means a submit straight to the server, as
+  before. And if svn did not reach the server through the tunnel at all
+  (no tunnel opened — no transaction started), the submit is retried directly
+  and that goes to `apsvn.log`; once the tunnel did reach the server, an error
+  is a real one and is reported, never retried.
 
 ### Updating itself
 
@@ -1241,7 +1261,7 @@ decision, not a gap.
 
 ### Tests
 
-Without a server — 849 checks against a temporary `file://` repository (and,
+Without a server — 885 checks against a temporary `file://` repository (and,
 for the studio server, a fake one on `127.0.0.1`); they leave nothing behind:
 
 ```bash
@@ -1286,6 +1306,11 @@ runtime\python.exe tests\test_apsvn.py
   “another program” refused quietly with its lock intact; never a plain
   `cleanup`; tidied after a submit, an update, at start and daily, never
   during a transfer;
+* `test_meter.py` — the submit byte meter: exact counts both ways, a reply
+  after the end of writing, nowhere but the project's server, several tunnels
+  at once, stopping; percent, speed and remaining time from it; https only;
+  a submit that did not reach the server through it goes directly, one that
+  did is never retried;
 * `test_refresh.py` — *Get latest* pressed while the background check holds
   the lock waits and succeeds, a second action during a real transfer is
   still refused at once, reading history is not a transfer, and an update

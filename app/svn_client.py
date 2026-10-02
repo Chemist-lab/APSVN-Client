@@ -570,11 +570,10 @@ def _stream_lines(cmd, cwd, stdin_data, on_line, on_io=None):
         def sample():
             while p.poll() is None:
                 n = _io_read(p._handle)
-                if n is not None:
-                    try:
-                        on_io(n)
-                    except Exception:
-                        pass
+                try:
+                    on_io(n)          # None — лічильників ОС немає (мак)
+                except Exception:
+                    pass
                 time.sleep(0.5)
         threading.Thread(target=sample, daemon=True).start()
 
@@ -643,7 +642,7 @@ def _stream(cmd, cwd, stdin_data, dest):
 
 def _run(args, cwd=None, username=None, password=None, timeout=120,
          targets=None, message=None, _retry=True, stdout_to=None,
-         notifier=None, operands=None):
+         notifier=None, operands=None, extra=None):
     """Єдина точка виклику svn.exe.
 
     operands — шляхи й адреси, що мусять іти в argv (move, cat, copy,
@@ -677,6 +676,8 @@ def _run(args, cwd=None, username=None, password=None, timeout=120,
     if _config_dir:
         cmd += ["--config-dir", _config_dir]
     cmd += ["--non-interactive"]
+    if extra:
+        cmd += list(extra)        # напр. лічильник на трубі (meter.svn_args)
 
     tmp = []
     try:
@@ -751,7 +752,7 @@ def _run(args, cwd=None, username=None, password=None, timeout=120,
                 return _run(args, cwd=cwd, username=username, password=password,
                             timeout=timeout, targets=targets, message=message,
                             _retry=False, stdout_to=stdout_to,
-                            notifier=notifier, operands=operands)
+                            notifier=notifier, operands=operands, extra=extra)
             raise SvnError(humanize(raw), raw)
         return out
     finally:
@@ -997,7 +998,8 @@ def update(wc, username=None, password=None, progress=None, total=None):
 
 
 def commit(wc, paths, message, username=None, password=None, progress=None,
-           total=None, total_bytes=None, rate_hint=None, keep_locks=True):
+           total=None, total_bytes=None, rate_hint=None, keep_locks=True,
+           meter=None):
     if not paths:
         raise SvnError("No files selected")
     # --no-unlock: svn за замовчуванням знімає лок на коміті, і файл з
@@ -1008,9 +1010,9 @@ def commit(wc, paths, message, username=None, password=None, progress=None,
     args = ["commit"] + (["--no-unlock"] if keep_locks else [])
     out = _dec(_run(args, cwd=wc, targets=paths,
                     message=message, username=username, password=password,
-                    timeout=None,
+                    timeout=None, extra=meter.svn_args() if meter else None,
                     notifier=_notifier(progress, "upload", total or len(paths),
-                                       wc, total_bytes, rate_hint)
+                                       wc, total_bytes, rate_hint, meter)
                     if progress else None))
     m = re.search(r"Committed revision (\d+)", out)   # svn.exe завжди англійський
     if m:
@@ -1455,11 +1457,15 @@ class _Notifier:
     """
 
     def __init__(self, cb, kind, total=None, wc=None, total_bytes=None,
-                 rate_hint=None):
+                 rate_hint=None, meter=None):
         self.cb, self.wc = cb, wc
+        # meter — лічильник байтів на трубі до сервера (meter.Meter): з ним
+        # фаза передачі має справжні відсотки, швидкість і залишок часу
+        self.meter = meter
         self.st = {"kind": kind, "phase": "start", "done": 0, "total": total,
                    "file": None, "bytes": None, "total_bytes": total_bytes,
-                   "pct": None, "rate": None, "elapsed": 0, "eta": None}
+                   "pct": None, "rate": None, "elapsed": 0, "eta": None,
+                   "measured": meter is not None}
         # rate_hint — швидкість, ЗАМІРЯНА на попередніх передачах цього ж
         # користувача. Лічильники читань для цього не годяться: замір показав
         # 2.00x обсягу для одного великого файлу і 1.00x для сотні дрібних,
@@ -1471,9 +1477,25 @@ class _Notifier:
     def push(self):
         st = self.st
         st["elapsed"] = round(time.monotonic() - self.started, 1)
+        # Із лічильником на трубі передача — справжня: скільки байтів уже
+        # пішло до сервера, з якою швидкістю і скільки лишилось. Обсяг — сума
+        # розмірів файлів, тобто верхня межа: змінений файл svn може послати
+        # меншою різницею, тоді смуга просто скінчиться раніше. 99% — стеля до
+        # «Committing transaction»: решту робить уже сервер.
+        if self.meter is not None and st["phase"] == "send":
+            st["bytes"] = self.meter.up
+            tb = st["total_bytes"]
+            st["pct"] = min(99, int(100 * st["bytes"] / tb)) if tb else None
+            r = st["rate"]
+            st["eta"] = (max(0, round((tb - st["bytes"]) / r))
+                         if tb and r and r > 1024 and st["bytes"] < tb else None)
+            if st["total"] and st["done"] > st["total"]:
+                st["total"] = None
+            self.cb(dict(st))
+            return
         # Залишок часу — тільки якщо є з чого його порахувати. Оцінка спирається
         # на заміряну раніше швидкість, тому подається як приблизна.
-        if (st["phase"] in ("send", "finalize", "prepare")
+        if (st["phase"] in ("send", "finalize", "prepare") and self.meter is None
                 and self.rate_hint and st["total_bytes"]):
             st["eta"] = max(0, round(st["total_bytes"] / self.rate_hint
                                      - st["elapsed"]))
@@ -1515,6 +1537,11 @@ class _Notifier:
         self.push()
 
     def io(self, nbytes):
+        if self.meter is not None:
+            # швидкість — з байтів на трубі, а не з читань диска (ті 1-2.9x)
+            nbytes = self.meter.up
+        elif nbytes is None:
+            return
         now = time.monotonic()
         if self._prev is None:
             self._prev = (now, nbytes)
@@ -1522,14 +1549,18 @@ class _Notifier:
         dt = now - self._prev[0]
         if dt < 0.9:                 # згладжуємо, інакше число смикається
             return
-        self.st["rate"] = max(0.0, (nbytes - self._prev[1]) / dt)
+        r = max(0.0, (nbytes - self._prev[1]) / dt)
+        old = self.st["rate"]
+        # з лічильником згладжуємо: залишок часу інакше стрибав би щосекунди
+        self.st["rate"] = (r if old is None or self.meter is None
+                           else old * 0.6 + r * 0.4)
         self._prev = (now, nbytes)
         self.push()
 
 
 def _notifier(cb, kind, total=None, wc=None, total_bytes=None,
-              rate_hint=None):
-    return _Notifier(cb, kind, total, wc, total_bytes, rate_hint)
+              rate_hint=None, meter=None):
+    return _Notifier(cb, kind, total, wc, total_bytes, rate_hint, meter)
 
 
 def _watch_size(dest, total, cb, kind="download"):

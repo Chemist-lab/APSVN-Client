@@ -187,6 +187,24 @@ else:
         check("залежності зведено, а не передано поіменно", size < 20000,
               "%d байт через міст до інтерфейсу" % size)
 
+# --- лічильник поступу здачі: справжній svn через тунель, ЛИШЕ ЧИТАННЯ -------
+gauge = a._meter_for(url)
+if gauge is None:
+    print("  (адреса не https — лічильника на трубі тут не буває, перевірку пропущено)")
+else:
+    try:
+        out = sc._run(["log", "-l", "3"], operands=[url], cwd=wc, username=u, password=p,
+                      timeout=120, extra=gauge.svn_args())
+        check("svn через лічильник: вхід і відповідь сервера — як напряму",
+              b"-----" in out, len(out))
+        check("тунель дійшов саме до сервера проєкту і порахував обидва боки",
+              gauge.conns >= 1 and gauge.up > 0 and gauge.down > 0 and not gauge.refused,
+              (gauge.conns, gauge.up, gauge.down, gauge.refused))
+    except sc.SvnError as e:
+        check("svn через лічильник: вхід і відповідь сервера — як напряму", False, e)
+    finally:
+        gauge.stop()
+
 print()
 print("=" * 62)
 print("ПРОЙДЕНО: %d   ПРОВАЛЕНО: %d" % (len(OK), len(FAIL)))

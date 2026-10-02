@@ -278,9 +278,12 @@ function startProgress() {
     if (e.phase === "send" || e.phase === "finalize") {
       if (!sendStart) sendStart = Date.now();
       const secs = Math.round((Date.now() - sendStart) / 1000);
-      $("busy-sub").textContent =
-        (secs > 2 ? mmss(secs) + " so far — " : "") +
-        "svn reports nothing while sending; the window is not stuck";
+      // З лічильником на трубі видно саму передачу — тоді досить часу.
+      // Без нього (не https) svn мовчить, і людині варто знати, що вікно живе.
+      $("busy-sub").textContent = e.measured
+        ? (secs > 2 ? mmss(secs) + " so far" : "please keep this window open")
+        : (secs > 2 ? mmss(secs) + " so far — " : "") +
+          "svn reports nothing while sending; the window is not stuck";
     } else {
       sendStart = 0;
       $("busy-sub").textContent = e.file || "please keep this window open";
@@ -293,14 +296,15 @@ function startProgress() {
 // однієї версії, де відомі й байти, і розмір. Для заливання лічильники читань
 // дають 1.0-2.0x обсягу залежно від форми коміту, тож число було б завищеним.
 function rateOf(e) {
-  return e.kind === "download" && e.rate > 65536 ? " · " + mb(e.rate) + "/s" : "";
+  const real = e.kind === "download" || (e.kind === "upload" && e.measured);
+  return real && e.rate > 65536 ? " · " + mb(e.rate) + "/s" : "";
 }
 
 // Залишок часу. На качанні він точний, на заливанні — оцінка за швидкістю,
 // заміряною на попередніх передачах, тому з «≈».
 function etaOf(e) {
   if (e.eta == null) return "";
-  const approx = e.kind === "upload" ? "≈ " : "";
+  const approx = e.kind === "upload" && !e.measured ? "≈ " : "";
   return e.eta < 5 ? " · almost done"
                    : " · " + approx + mmss(e.eta) + " left";
 }
@@ -321,6 +325,12 @@ function progText(e) {
     return "Downloading — " + mb(e.bytes) + of +
            (e.pct != null ? " (" + e.pct + "%)" : "") + rateOf(e) + etaOf(e);
   }
+  if (e.phase === "send" && e.measured && e.bytes != null)
+    // справжні байти до сервера; обсяг — сума файлів, тобто «до»: змінений
+    // файл svn може послати меншою різницею, і тоді смуга скінчиться раніше
+    return "Sending — " + mb(e.bytes) +
+           (e.total_bytes ? " of " + mb(e.total_bytes) : "") +
+           (e.pct != null ? " (" + e.pct + "%)" : "") + rateOf(e) + etaOf(e);
   if (e.phase === "send")
     return "Sending file data…" +
            (e.total_bytes ? " — " + mb(e.total_bytes) + " to upload" : "") +

@@ -104,6 +104,7 @@ try:
     import blender
     import explorer as ex
     import finder
+    import meter
     import shellicon as si
     import updater as up
     import server_api as srv
@@ -1757,18 +1758,39 @@ class Api:
             keep = self.conf.get("prefs", {}).get("keep_locks", False) \
                 if keep_locks is None else bool(keep_locks)
             holders = _placeholders(wc, send, after)
+            gauge = self._meter_for(self.c.get("url"))
+            commit = lambda g: sc.commit(
+                wc, send, message, username=u, password=p,
+                progress=self._tick, total=expect or len(send),
+                total_bytes=nbytes or None, rate_hint=self._rate("upload"),
+                keep_locks=keep, meter=g)
             try:
-                out = sc.commit(wc, send, message, username=u, password=p,
-                                progress=self._tick, total=expect or len(send),
-                                total_bytes=nbytes or None,
-                                rate_hint=self._rate("upload"), keep_locks=keep)
+                try:
+                    out = commit(gauge)
+                except sc.SvnError:
+                    # Через лічильник svn до сервера так і не дійшов — значить,
+                    # завадив саме він (жодної транзакції ще не почато), тож
+                    # здаємо ще раз напряму, як було до лічильника. Дійшов —
+                    # помилка справжня (хук, «застаріло», мережа), її й кажемо.
+                    if gauge is None or gauge.conns:
+                        raise
+                    gauge.stop()
+                    activity("submit: the upload meter did not reach the "
+                             "server — sent directly")
+                    gauge = None
+                    out = commit(None)
             finally:
+                if gauge is not None:
+                    gauge.stop()
                 _drop_placeholders(holders)
             took = time.monotonic() - t0
-            self._learn_rate("upload", nbytes, took)
-            if nbytes > 8 * 1024 * 1024 and sc.COMMIT_RE.search(out):
+            # навчаємось на справжніх байтах, коли вони є: розміри файлів для
+            # змінених — лише верхня межа (svn шле різницю)
+            sent = gauge.up if gauge is not None and gauge.up else nbytes
+            self._learn_rate("upload", sent, took)
+            if sent > 8 * 1024 * 1024 and sc.COMMIT_RE.search(out):
                 out += " (%.0f MB in %s, %.1f MB/s)" % (
-                    nbytes / 1048576, _mmss(took), nbytes / 1048576 / took)
+                    sent / 1048576, _mmss(took), sent / 1048576 / took)
             if gone and sc.COMMIT_RE.search(out):
                 # видалене лишалося на диску, щоб пережити коміт (див. remove)
                 sc.purge_deleted(wc, gone)
@@ -1798,6 +1820,19 @@ class Api:
         if sc.COMMIT_RE.search(out or ""):
             self._tidy_soon()
         return out
+
+    @staticmethod
+    def _meter_for(url):
+        """Лічильник байтів на трубі до сервера — лише для https (там svn іде
+        CONNECT-тунелем, і вмісту ніхто, крім сервера, не бачить). Не вийшло
+        відкрити — None: здача піде напряму, як раніше, без відсотків."""
+        try:
+            u = urllib.parse.urlsplit(url or "")
+            if u.scheme != "https" or not u.hostname:
+                return None
+            return meter.Meter(u.hostname, u.port or 443)
+        except (OSError, ValueError):
+            return None
 
     # --- прибирання старих копій файлів (.svn/pristine) ---
     TIDY_DELAY = 3               # с: спершу хай інтерфейс оновиться після дії

@@ -470,7 +470,7 @@ part of the root, with the code in `Resources/app`.
 | `blender.py`    | which Blender opens a scene: the studio's version, found on this machine |
 | `blendthumb.py` | preview embedded in a `.blend` |
 | `imgthumb.py`   | previews for png/jpg/tga/exr |
-| `tests/`        | 909 checks without a server, up to 26 more (read-only) against the real one |
+| `tests/`        | 912 checks without a server, up to 26 more (read-only) against the real one |
 
 Settings live in `%APPDATA%\APSVN\config.json`, format 2:
 `{"format":2, "projects":[…], "current":"<id>", …mirror of the current one…}`.
@@ -1133,9 +1133,26 @@ behind decisions that look odd until you know why.
   size, and svn sends a changed file only as its difference (compressed, too).
   A real submit of a 6.7 GB scene sent 2.2 GB; the bar sat at *0% · 1.2 MB/s ·
   95m 16s left* while svn went through the parts that had not changed, and the
-  submit was over at a third of it. Now the bar reads *Sending — 4.2 GB of
-  6.7 GB (63%) · 1m 10s left*, and under it is what actually went over the
-  network: *1m 05s so far · 1.4 GB uploaded · 29 MB/s*. The remaining time
+  submit was over at a third of it. Now the window says what is happening,
+  how far and how long in one line, and the details under the bar:
+
+  | Phase              | Line above the bar                    | Under the bar                                                 |
+  |--------------------|---------------------------------------|---------------------------------------------------------------|
+  | svn lists files    | *Preparing — file 2 of 2*             | *textures/wood.png*                                           |
+  | sending, edited    | *Submitting — 63% · about 1 min left* | *4.2 of 6.7 GB · only the changes are sent: 1.4 GB · 29 MB/s* |
+  | sending, new file  | *Submitting — 63% · about 2 min left* | *4.2 of 6.7 GB · 29 MB/s*                                     |
+  | server finishes    | *Saving on the server…*               | *2.2 GB sent · 1m 42s*                                        |
+
+  and after it: *Sent. This is commit 41 — your team can see your work now.
+  6.7 GB in 1m 42s; only the changes were sent (2.2 GB).* “Only the changes”
+  appears when an edited file is being submitted and less goes over the
+  network than svn has gone through. Without that explanation, 29 MB/s next
+  to a bar racing through gigabytes looked like a fault. The time left is in
+  minutes, *about 1 min left*: seconds (*1m 10s → 1m 25s → 58s*) pretend to a
+  precision no estimate has, and they jump every second. The same two lines
+  serve downloading one version (*Downloading — 3% · about 2 min left* /
+  *scene.blend · 34 MB of 1.2 GB · 85 MB/s*), and locking a folder says
+  *Locking* or *Releasing*. It used to say *Downloading*. The remaining time
   uses the slower of two speeds through the files, over ~1 s and ~8 s. A
   changed file goes fast where svn only compares and at network speed where it
   sends; the short speed catches a slowdown at once, and the long one keeps a

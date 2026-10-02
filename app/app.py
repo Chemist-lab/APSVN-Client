@@ -1738,7 +1738,7 @@ class Api:
             # і поступ показував би «файл 2062 з 1». svn звітує і про теки, тож
             # рахуємо всі записи під вибраним, а не самі лише файли.
             picked = set(send)
-            expect, nbytes = 0, 0
+            expect, nbytes, edited = 0, 0, False
             for q, f in after.items():
                 if f.get("status") not in ("added", "modified", "deleted",
                                            "replaced"):
@@ -1752,11 +1752,16 @@ class Api:
                 # кінчалась, не дійшовши й до половини.
                 if f.get("status") == "deleted":
                     continue
+                full = os.path.join(wc, q.replace("/", os.sep))
                 try:
-                    nbytes += os.path.getsize(os.path.join(
-                        wc, q.replace("/", os.sep)))
+                    nbytes += os.path.getsize(full)
                 except OSError:
                     pass
+                # змінений файл svn шле лише різницею — вікно мусить це
+                # пояснити, інакше мала швидкість мережі виглядає збоєм
+                if f.get("status") in ("modified", "replaced") \
+                        and os.path.isfile(full):
+                    edited = True
             t0 = time.monotonic()
             # Лок після здачі СПАДАЄ — так просив користувач і так поводиться
             # svn за замовчуванням. Зворотний бік реальний: файл із
@@ -1771,6 +1776,7 @@ class Api:
             last = {}
 
             def tick(e):
+                e["edited"] = edited
                 last.clear()
                 last.update(e)
                 self._tick(e)
@@ -1812,15 +1818,17 @@ class Api:
             self._learn_rate("upload", nbytes, took)
             done = sc.COMMIT_RE.search(out)
             up = gauge.up if gauge is not None else 0
+            # Підсумок — окремим рядком у самому кінці, після важливішого
+            # (лок, перевірка). Мережею змінений файл їде лише різницею, тож
+            # надіслано буває набагато менше за розмір — і це добре.
+            stats = ""
             if nbytes > 8 * 1024 * 1024 and done:
-                # Мережею змінений файл їде лише різницею (і стиснутим), тож
-                # «вивантажено» буває набагато менше за розмір — і це добре.
-                out += (" (%s in %s, %s uploaded)" % (
-                    human_size(nbytes), _mmss(took), human_size(up))
-                    if up and up < nbytes * 0.9 else
-                    " (%s in %s, %.1f MB/s)" % (
-                        human_size(nbytes), _mmss(took),
-                        nbytes / 1048576 / max(took, 0.001)))
+                stats = "\n%s in %s" % (human_size(nbytes), _mmss(took))
+                if up and up < nbytes * 0.9:
+                    stats += ("; only the changes were sent (%s)." if edited
+                              else "; %s sent, compressed.") % human_size(up)
+                else:
+                    stats += ", %.1f MB/s." % (nbytes / 1048576 / max(took, 0.001))
             if nbytes >= 64 * 1024 * 1024 and done:
                 # Для журналу: скільки svn пройшов по файлах (на цьому стоїть
                 # смуга) і скільки пішло мережею — щоб справжні здачі могли
@@ -1855,7 +1863,7 @@ class Api:
             done = sc.COMMIT_RE.search(out)
             if review and done:
                 out += self._send_to_review(review, message, done.group(1))
-            return out
+            return out + stats
 
         out = self._guard(work)
         if sc.COMMIT_RE.search(out or ""):

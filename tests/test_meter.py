@@ -482,35 +482,60 @@ class Gauge:
         pass
 
 
-with open(os.path.join(wc, "scene.blend"), "wb") as fh:
-    fh.write(bytes(70 * MB))
-kws.clear()
-
-
 def done_fake(*a, **kw):
     kws.append(kw)
     kw["progress"]({"kind": "upload", "phase": "finalize", "basis": "files",
-                    "bytes": 70 * MB, "total_bytes": 70 * MB})
+                    "bytes": kw["total_bytes"], "total_bytes": kw["total_bytes"]})
     return "Sent. This is commit 99 — your team can see your work now."
 
 
-sc.commit = done_fake
-app.Api._meter_for = staticmethod(lambda u: Gauge())
-api.c["url"] = "https://svn.studio.test/svn/demo"
-try:
-    out = api.do_commit(["scene.blend"], "велика сцена")
-finally:
-    sc.commit, app.Api._meter_for = real_commit, real_for
-    api.c["url"] = url
+ticks = []
+
+
+def fake_submit(paths, note):
+    """Здача з підробленим svn і лічильником; події поступу — у ticks (після
+    здачі програма поступ скидає, тож дивитись треба під час неї)."""
+    ticks.clear()
+    sc.commit = done_fake
+    app.Api._meter_for = staticmethod(lambda u: Gauge())
+    api.c["url"] = "https://svn.studio.test/svn/demo"
+    api._tick = ticks.append
+    try:
+        return api.do_commit(paths, note)
+    finally:
+        sc.commit, app.Api._meter_for = real_commit, real_for
+        api.c["url"] = url
+        del api._tick
+
+
+with open(os.path.join(wc, "scene.blend"), "wb") as fh:
+    fh.write(bytes(70 * MB))
+kws.clear()
+out = fake_submit(["scene.blend"], "велика сцена")
 check("на https смуга — за записаним", kws and kws[0]["track_writes"] is True,
       kws and kws[0]["track_writes"])
-check("підсумок: обсяг, час і скільки справді вивантажено",
-      "70.0 MB in" in out and "20.0 MB uploaded" in out, out)
+check("новий файл — без «лише зміни» (вікну нема чого пояснювати)",
+      ticks and ticks[-1].get("edited") is False, ticks[-1:])
+check("підсумок окремим рядком: обсяг, час і що пішло мережею стиснутим",
+      out.endswith("\n70.0 MB in 0s; 20.0 MB sent, compressed."), repr(out))
 with open(app.ACTIVITY, encoding="utf-8") as fh:
     log = fh.read()
 check("у журналі — скільки svn пройшов по файлах і скільки пішло мережею",
       "submit r99: 70.0 MB" in log and "(1.00x)" in log and "uploaded 20.0 MB" in log,
       log.strip().splitlines()[-1:])
+
+# змінений файл (текстовий — бінарник без лока здачу не пройде)
+with open(os.path.join(wc, "notes.txt"), "wb") as fh:
+    fh.write(b"a" * (40 * MB))
+sc.add(wc, ["notes.txt"])
+api.do_commit(["notes.txt"], "нотатки")
+with open(os.path.join(wc, "notes.txt"), "r+b") as fh:
+    fh.write(b"b" * MB)
+out = fake_submit(["notes.txt"], "правка нотаток")
+check("змінений файл — вікно знає, що їде лише різниця",
+      ticks and ticks[-1].get("edited") is True, ticks[-1:])
+check("підсумок: «only the changes were sent»",
+      out.endswith("\n40.0 MB in 0s; only the changes were sent (20.0 MB)."), repr(out))
 
 print()
 print("=" * 64)

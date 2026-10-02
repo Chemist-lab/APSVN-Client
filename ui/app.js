@@ -249,6 +249,9 @@ let progTimer = null, sendStart = 0;
 function mb(n) {
   if (n == null) return "";
   if (n >= 1073741824) return (n / 1073741824).toFixed(1) + " GB";
+  // від 10 МБ — цілі, як у списках файлів (fmtSize); нижче знак після
+  // коми ще щось каже («1.2 MB/s»)
+  if (n >= 10485760) return Math.round(n / 1048576) + " MB";
   if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
   if (n >= 1024) return Math.round(n / 1024) + " KB";
   return n + " B";
@@ -273,54 +276,17 @@ function startProgress() {
       bar.style.width = "";        // інакше вбудована ширина переб'є .indet
       bar.classList.add("indet");
     }
-    // svn не звітує про хід самої передачі, тож замість тиші показуємо, що
-    // саме зараз відбувається і скільки вже триває
+    // Час, що минув, — від початку передачі: лише він і лишається, коли svn
+    // про саму передачу мовчить (не https, лічильників нема)
     if (e.phase === "send" || e.phase === "finalize") {
       if (!sendStart) sendStart = Date.now();
-      const secs = Math.round((Date.now() - sendStart) / 1000);
-      // Коли передачу видно, досить часу (і того, як іде мережа). Без
-      // цього svn мовчить, і людині варто знати, що вікно живе.
-      $("busy-sub").textContent = e.measured
-        ? (secs > 2 ? mmss(secs) + " so far" : "please keep this window open") +
-          sentOf(e)
-        : (secs > 2 ? mmss(secs) + " so far — " : "") +
-          "svn reports nothing while sending; the window is not stuck";
     } else {
       sendStart = 0;
-      $("busy-sub").textContent = e.file || "please keep this window open";
     }
+    const secs = sendStart ? Math.round((Date.now() - sendStart) / 1000) : 0;
     $("busy-t").textContent = progText(e);
+    $("busy-sub").textContent = subText(e, secs);
   }, 400);
-}
-
-// Швидкість показуємо ЛИШЕ там, де вона справді виміряна — тобто на качанні
-// однієї версії, де відомі й байти, і розмір. Для заливання лічильники читань
-// дають 1.0-2.0x обсягу залежно від форми коміту, тож число було б завищеним.
-function rateOf(e) {
-  const real = e.kind === "download" || (e.kind === "upload" && e.measured);
-  return real && e.rate > 65536 ? " · " + mb(e.rate) + "/s" : "";
-}
-
-// Скільки справді пішло мережею. Змінений файл svn шле лише різницею (і
-// стиснутою), тож це число буває набагато менше за смугу — так і має бути:
-// смуга йде за файлами, а не за мережею.
-function sentOf(e) {
-  if (e.basis !== "files" || !e.sent) return "";
-  return " · " + mb(e.sent) + " uploaded" +
-         (e.sent_rate > 65536 ? " · " + mb(e.sent_rate) + "/s" : "");
-}
-
-// Залишок часу. На качанні він точний, на заливанні — оцінка за швидкістю,
-// заміряною на попередніх передачах, тому з «≈».
-function etaOf(e) {
-  if (e.eta == null) return "";
-  const approx = e.kind === "upload" && !e.measured ? "≈ " : "";
-  return e.eta < 5 ? " · almost done"
-                   : " · " + approx + mmss(e.eta) + " left";
-}
-
-function mmss(s) {
-  return s < 60 ? s + "s" : Math.floor(s / 60) + "m " + (s % 60) + "s";
 }
 
 function stopProgress() {
@@ -329,30 +295,89 @@ function stopProgress() {
   $("bar-wrap").classList.add("hidden");
 }
 
+/* Текст поступу — два рядки. Угорі те, на що дивляться: що відбувається,
+   відсоток і скільки лишилось. Під смугою подробиці: обсяги, швидкість, час.
+   Здача йде так: «Preparing» (svn перелічує файли) -> «Submitting» (передача;
+   відсоток — за тим, як далеко svn пройшов по файлах, див.
+   svn_client._io_counts) -> «Saving on the server». */
 function progText(e) {
-  if (e.phase === "receive") {
-    const of = e.total_bytes ? " of " + mb(e.total_bytes) : "";
-    return "Downloading — " + mb(e.bytes) + of +
-           (e.pct != null ? " (" + e.pct + "%)" : "") + rateOf(e) + etaOf(e);
+  if (e.phase === "receive")
+    return withLeft("Downloading", e);
+  if (e.kind === "upload") {
+    if (e.phase === "send") return withLeft("Submitting", e);
+    if (e.phase === "finalize") return "Saving on the server…";
+    return e.done ? "Preparing — file " + e.done + (e.total ? " of " + e.total : "")
+                  : "Preparing…";
   }
-  if (e.phase === "send" && e.measured && e.bytes != null)
-    // basis "files": як далеко svn просунувся по файлах — швидкість мережі
-    // тоді в рядку під смугою (sentOf). "network": байти на трубі, обсяг —
-    // лише верхня межа (змінений файл їде різницею).
-    return "Sending — " +
-           mb(e.total_bytes ? Math.min(e.bytes, e.total_bytes) : e.bytes) +
-           (e.total_bytes ? " of " + mb(e.total_bytes) : "") +
-           (e.pct != null ? " (" + e.pct + "%)" : "") +
-           (e.basis === "network" ? rateOf(e) : "") + etaOf(e);
-  if (e.phase === "send")
-    return "Sending file data…" +
-           (e.total_bytes ? " — " + mb(e.total_bytes) + " to upload" : "") +
-           etaOf(e);
   if (e.phase === "finalize") return "Finishing up on the server…";
-  const verb = e.kind === "upload" ? "Uploading" : "Downloading";
+  const verb = {lock: "Locking", unlock: "Releasing"}[e.kind] || "Downloading";
   if (e.total) return verb + " — file " + e.done + " of " + e.total +
                        (e.pct != null ? " (" + e.pct + "%)" : "");
   return verb + " — " + e.done + (e.done === 1 ? " file" : " files");
+}
+
+// «Submitting — 63% · about 1 min left»; без відсотка й залишку — «Submitting…»
+function withLeft(verb, e) {
+  const head = verb + (e.pct != null ? " — " + e.pct + "%" : "");
+  const left = e.eta == null ? "" : " · " + leftText(e.eta);
+  return e.pct == null && !left ? verb + "…" : head + left;
+}
+
+// Залишок — словами й хвилинами. Секунди («1m 10s -> 1m 25s -> 58s») удають
+// точність, якої в оцінки немає, і скачуть щосекунди.
+function leftText(s) {
+  if (s < 5) return "almost done";
+  if (s < 55) return "about " + Math.ceil(s / 5) * 5 + "s left";
+  const m = Math.round(s / 60);
+  if (m < 60) return "about " + m + " min left";
+  return "about " + Math.floor(m / 60) + " h" + (m % 60 ? " " + m % 60 + " min" : "") +
+         " left";
+}
+
+function subText(e, secs) {
+  if (e.phase === "receive")
+    return [e.file,
+            e.bytes == null ? "" : e.total_bytes ? ofSize(e.bytes, e.total_bytes) : mb(e.bytes),
+            speedOf(e.rate)].filter(Boolean).join(" · ");
+  if (e.kind === "upload" && e.phase === "send") {
+    if (!e.measured)
+      return (secs > 2 ? mmss(secs) + " so far — " : "") +
+             "svn reports nothing while sending; the window is not stuck";
+    if (e.basis === "network")
+      // байти на трубі — це і є «надіслано»; сума файлів — лише верхня межа
+      return [mb(e.bytes) + " sent" + (e.total_bytes ? " of up to " + mb(e.total_bytes) : ""),
+              speedOf(e.sent_rate)].filter(Boolean).join(" · ");
+    const done = e.total_bytes ? Math.min(e.bytes, e.total_bytes) : e.bytes;
+    const parts = [e.total_bytes ? ofSize(done, e.total_bytes) : mb(done)];
+    // Мережею змінений файл їде лише різницею, тож надіслано менше, ніж
+    // пройдено, а швидкість мережі мала. Без пояснення це виглядає збоєм.
+    if (e.sent != null && done >= 32 * 1048576 && e.sent < done * 0.8)
+      parts.push(e.edited ? "only the changes are sent: " + mb(e.sent)
+                          : mb(e.sent) + " sent, compressed");
+    parts.push(speedOf(e.sent_rate));
+    return parts.filter(Boolean).join(" · ");
+  }
+  if (e.kind === "upload" && e.phase === "finalize")
+    return [e.sent ? mb(e.sent) + " sent" : "", mmss(Math.round(e.elapsed || 0))]
+           .filter(Boolean).join(" · ");
+  return e.file || "please keep this window open";
+}
+
+// «4.2 of 6.7 GB» — одиниця один раз, коли однакова; інакше «512.0 MB of 6.7 GB»
+function ofSize(a, b) {
+  const x = mb(a), y = mb(b);
+  const [num, unit] = x.split(" ");
+  return (unit === y.split(" ")[1] ? num : x) + " of " + y;
+}
+
+// Швидкість — лише виміряна: качання версії (файл на диску) і байти на трубі
+// до сервера. Похідна від читань svn сюди не йде — вона в 1-4 рази більша.
+function speedOf(r) {
+  return r > 65536 ? mb(r) + "/s" : "";
+}
+
+function mmss(s) {
+  return s < 60 ? s + "s" : Math.floor(s / 60) + "m " + (s % 60) + "s";
 }
 
 /* --- стан ------------------------------------------------------------- */
@@ -2731,7 +2756,7 @@ $("b-commit").onclick = async () => {
 
   const review = $("c-review").checked && !$("c-review-l").classList.contains("hidden")
     ? reviewTasks().map(t => t.id) : [];
-  busy(true, "Submitting… big files can take a while");
+  busy(true, "Preparing…");
   let failed = null;
   try {
     toast(await api().do_commit(Array.from(selected), msg,

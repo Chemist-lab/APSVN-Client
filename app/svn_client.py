@@ -1383,7 +1383,7 @@ def unlock_folder(wc, rel, username=None, password=None, progress=None):
     try:
         _run(["unlock"], cwd=wc, targets=mine, username=username,
              password=password, timeout=None,
-             notifier=_notifier(progress, "lock", len(mine), wc)
+             notifier=_notifier(progress, "unlock", len(mine), wc)
              if progress else None)
     except SvnError:
         pass

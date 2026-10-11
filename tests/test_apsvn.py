@@ -156,6 +156,18 @@ except Exception as e:
 check("переклад E155004", "Repair" in sc.humanize("svn: E155004: sqlite busy"))
 check("переклад чужого лока", "Somebody else has this file locked" in sc.humanize("svn: E195022: File locked"))
 check("переклад логіна", "user name or password" in sc.humanize("svn: E170001: Authorization failed"))
+# зниклий проєкт — не «перевір інтернет» (сирий текст — з живого сервера)
+gone = sc.humanize(
+    "svn: E170013: Unable to connect to a repository at URL "
+    "'https://svn.studio.test/svn/demo'\n"
+    "svn: E000002: Could not find the requested SVN filesystem")
+check("зниклий проєкт — так і сказано, з порадою, куди йти",
+      "does not have this project" in gone and "Change server address" in gone
+      and "internet" not in gone, gone)
+check("а справжній обрив зв'язку — як і був",
+      "No connection" in sc.humanize(
+          "svn: E170013: Unable to connect to a repository at URL 'https://x/svn/a'\n"
+          "svn: E731001: No such host is known."))
 check("переклад 502 від проксі: нічого не пропало",
       "Nothing was lost" in sc.humanize(
           "svn: E175002: Unexpected HTTP status 502 'Bad Gateway' on "

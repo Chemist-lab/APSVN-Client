@@ -215,3 +215,8 @@ Check your internet and try again.» — художник шукатиме пр�
 на `05_CTDN_De_Cache`, зокрема «svn через лічильник». Спільні правки
 (`_io_counts(p)`, `desktop.TRASH`, тексти Кошика) на Windows нічого не
 змінили. README: 981 перевірка.
+
+«No connection» на зниклому проєкті — зроблено на Windows: окреме правило в
+`_HUMAN` перед загальним про зв'язок, ловить «Could not find the requested SVN
+filesystem» (сирий текст відтворено на живому сервері запитом до неіснуючого
+проєкту). Тексти — у `tests/test_apsvn.py`.

@@ -251,6 +251,17 @@ _HUMAN = [
     (r"E155035", "This file has a conflict — choose whose version to keep first."),
     (r"E195013", "You do not hold this file any more — there is nothing to release."),
     (r"E170001|E215004|Authorization failed", "That user name or password is not right."),
+    # Проєкту (сховища) на сервері немає: видалили, перейменували, перенесли.
+    # svn каже це як E170013 «Unable to connect» + E000002 «Could not find the
+    # requested SVN filesystem», і правило нижче радило перевірити інтернет —
+    # людина шукала б біду не там (Mac, 2026-10-12: сховища demo вже не було;
+    # відтворено на живому сервері запитом до неіснуючого проєкту). Тому —
+    # ПЕРЕД загальним правилом про зв'язок.
+    (r"Could not find the requested SVN filesystem",
+     "The server does not have this project any more — it may have been "
+     "renamed, moved or deleted. Your files here are safe. Ask your admin "
+     "for the project's current address, then use ⚙ Settings → Change "
+     "server address."),
     (r"E170013|E731001|Unable to connect|Could not resolve",
      "No connection to the server. Check your internet and try again."),
     (r"E170011", "This project has moved to a new address."),

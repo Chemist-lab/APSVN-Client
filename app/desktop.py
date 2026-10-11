@@ -166,11 +166,34 @@ def to_recycle_bin(paths):
             except OSError:
                 pass
     elif MAC:
+        # NSFileManager, а НЕ «tell application Finder to delete». Той шлях
+        # писався наосліп, і на першому ж виклику macOS спитала б дозволу
+        # керувати Finder (Automation) — художник побачив би віконце про
+        # «керування іншою програмою» посеред прибирання мотлоху, а «ні» там
+        # тихо лишало б усе на місці. trashItemAtURL — той самий Кошик, що в
+        # Finder (файл можна «Повернути»), без жодного дозволу.
+        #
+        # Стирати назавжди він не вміє: не вийшло перенести — повертає помилку,
+        # і файл лишається. Це те саме правило, що й FOF_WANTNUKEWARNING на
+        # Windows: ніколи не стирати мовчки.
+        #
+        # Перевірено вручну 2026-10-11: файл із «й» в імені й тека з вмістом
+        # пішли в ~/.Trash і звідти повернулися цілими; файл у теці без права
+        # запису лишився на місці, неушкоджений, і повернувся в списку
+        # «лишились». Чого тут перевірити не було як: мережевої шари (SMB),
+        # де Кошика немає зовсім.
+        try:
+            from Foundation import NSFileManager, NSURL
+        except Exception:
+            return paths            # без PyObjC — нічого не чіпаємо
+        fm = NSFileManager.defaultManager()
         for p in paths:
-            subprocess.run(["osascript", "-e",
-                            'tell application "Finder" to delete POSIX file "%s"'
-                            % p.replace("\\", "\\\\").replace('"', '\\"')],
-                           check=False, capture_output=True)
+            try:
+                fm.trashItemAtURL_resultingItemURL_error_(
+                    NSURL.fileURLWithPath_(p), None, None)
+            except Exception:
+                pass                # лишиться на місці — і так буде сказано
+
     return [p for p in paths if os.path.lexists(p)]
 
 

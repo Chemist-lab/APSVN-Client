@@ -2797,7 +2797,7 @@ function renderLocalOnly(d) {
                 : "—";
     h.append(t, s);
     if (g.recyclable)
-      h.append(mini("Move to Recycle Bin…", "warn", () => recycleJunk(g, title)));
+      h.append(mini("Move to " + trashName() + "…", "warn", () => recycleJunk(g, title)));
     sec.append(h);
     if (g.rows.length) {
       const p = document.createElement("div"); p.className = "lo-hint"; p.textContent = hint;
@@ -2842,24 +2842,39 @@ function localRow(r, gid) {
   return row;
 }
 
+// Як зветься Кошик у системі художника: «Recycle Bin» на Windows, «Trash» на
+// маку. Назву дає Python (desktop.TRASH через state), щоб повідомлення з
+// app.py і тексти тут не розійшлися. Поки стану ще немає — за платформою.
+function trashName() {
+  return (st && st.trash) ||
+    (navigator.platform.startsWith("Mac") ? "Trash" : "Recycle Bin");
+}
+
 async function recycleJunk(g, title) {
+  const T = trashName();
   const a = await ask({
     title: "Move " + g.recyclable + (g.recyclable === 1 ? " file" : " files") +
-           " to the Recycle Bin?",
+           " to the " + T + "?",
     lines: [
       title + ".",
       g.id === "backups"
         ? "These are older copies of your scenes that Blender made on saving. " +
           "The scenes themselves are not touched."
         : "Nothing that belongs to the project is touched.",
-      "They go to the Recycle Bin, so you can still get them back until it " +
-      "is emptied. If a drive has no Recycle Bin, Windows asks first.",
+      "They go to the " + T + ", so you can still get them back until it " +
+      "is emptied. " +
+      // Друге речення — про різну поведінку систем, а не лише різне слово.
+      // Windows там, де Кошика немає, питає перед стиранням; macOS у такому
+      // разі файл просто не чіпає (desktop.to_recycle_bin), і так і кажемо.
+      (T === "Recycle Bin"
+        ? "If a drive has no Recycle Bin, Windows asks first."
+        : "Anything that cannot go there stays where it is."),
     ],
     facts: [["Files", String(g.recyclable)], ["Frees up", fmtSize(g.recyclable_bytes)]],
-    ok: "Move to Recycle Bin",
+    ok: "Move to " + T,
   });
   if (!a.ok) return;
-  act("recycle_junk", [g.id], "Moving to the Recycle Bin…", openLocalOnly);
+  act("recycle_junk", [g.id], "Moving to the " + T + "…", openLocalOnly);
 }
 for (const id of ["b-fix", "b-server", "b-forget", "b-update-app"])
   $(id).addEventListener("click", () => menuOpen(false));

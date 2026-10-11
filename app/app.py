@@ -1319,6 +1319,7 @@ class Api:
                 "current": pid, "name": p.get("name") or "project",
                 "wc": p.get("wc"), "me": p.get("username"),
                 "version": VERSION,
+                "trash": desktop.TRASH,       # «Recycle Bin» чи «Trash» — для тексту
                 "prefs": self.conf.get("prefs", {})}
 
         if not self._lock.acquire(blocking=False):
@@ -2439,7 +2440,7 @@ class Api:
         Нове, ще не здане, сюди не потрапляє ніколи."""
         if group not in ("backups", "temp"):
             raise sc.SvnError("Only Blender backups and temporary files can be "
-                              "moved to the Recycle Bin from here.")
+                              "moved to the %s from here." % desktop.TRASH)
         wc = self._wc()
 
         def work():
@@ -2447,7 +2448,7 @@ class Api:
             rows = [r for g in data["groups"] if g["id"] == group
                     for r in g["rows"] if r.get("recyclable")]
             if not rows:
-                return "There is nothing to move to the Recycle Bin."
+                return "There is nothing to move to the %s." % desktop.TRASH
             full = {ex.inside(wc, r["path"]): r for r in rows}
             left = set(desktop.to_recycle_bin(list(full)))
             gone = [r for f, r in full.items() if f not in left]
@@ -2455,14 +2456,17 @@ class Api:
             activity("recycle %s %s: %d file(s), %s%s" % (
                 (self._proj() or {}).get("name") or "?", group, len(gone),
                 human_size(size), "; stayed: %d" % len(left) if left else ""))
-            out = ("Moved %d file%s (%s) to the Recycle Bin." % (
-                len(gone), "" if len(gone) == 1 else "s", human_size(size))
+            out = ("Moved %d file%s (%s) to the %s." % (
+                len(gone), "" if len(gone) == 1 else "s", human_size(size),
+                desktop.TRASH)
                 if gone else "Nothing was moved.")
             if left:
-                out += (" 1 file stayed where it was — the Recycle Bin was not "
-                        "available for it, or it is in use." if len(left) == 1 else
-                        " %d files stayed where they were — the Recycle Bin was "
-                        "not available for them, or they are in use." % len(left))
+                out += (" 1 file stayed where it was — the %s was not "
+                        "available for it, or it is in use." % desktop.TRASH
+                        if len(left) == 1 else
+                        " %d files stayed where they were — the %s was "
+                        "not available for them, or they are in use."
+                        % (len(left), desktop.TRASH))
             return out
 
         return self._guard(work)

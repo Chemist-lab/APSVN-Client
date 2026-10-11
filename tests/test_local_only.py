@@ -172,8 +172,10 @@ def fake_bin(paths):
 desktop.to_recycle_bin = fake_bin
 try:
     out = api.recycle_junk("backups")
+    # Назва Кошика — з desktop.TRASH: на Windows «Recycle Bin» (рядок той самий,
+    # що й був), на маку «Trash». Порівнюємо з тим самим джерелом, що й код.
     check("резервні копії — у Кошику, з підсумком",
-          out == "Moved 3 files (9.3 KB) to the Recycle Bin." and
+          out == "Moved 3 files (9.3 KB) to the %s." % desktop.TRASH and
           not os.path.exists(os.path.join(WC, "Assets", "сцена.blend1")) and
           not os.path.exists(os.path.join(WC, "Renders", "test", "old.blend1")), out)
     check("сама сцена й кадри — на місці",
@@ -193,7 +195,8 @@ try:
     except sc.SvnError:
         check("нове в Кошик не йде ніколи", os.path.exists(os.path.join(WC, "new.png")))
     out = api.recycle_junk("backups")
-    check("вдруге — чесне «нема чого»", out == "There is nothing to move to the Recycle Bin.", out)
+    check("вдруге — чесне «нема чого»",
+          out == "There is nothing to move to the %s." % desktop.TRASH, out)
     put("Assets/сцена.blend1", 4000)
     desktop.to_recycle_bin = lambda paths: list(paths)        # Кошика немає / відмова
     out = api.recycle_junk("backups")
@@ -202,6 +205,10 @@ try:
           os.path.exists(os.path.join(WC, "Assets", "сцена.blend1")), out)
 finally:
     desktop.to_recycle_bin = real_bin
+check("Кошик зветься так, як у цій системі",
+      desktop.TRASH == ("Recycle Bin" if desktop.WINDOWS else "Trash"), desktop.TRASH)
+check("і ця назва йде в стан для інтерфейсу",
+      api.state().get("trash") == desktop.TRASH, api.state().get("trash"))
 with open(app.ACTIVITY, encoding="utf-8") as fh:
     log = fh.read()
 check("у журналі — що й скільки прибрано",

@@ -35,6 +35,14 @@ def check(name, cond, detail=""):
 
 
 base = tempfile.mkdtemp(prefix="apsvn_move_")
+# Фонове прибирання .svn/pristine тут ні до чого, а шкодить: після здачі воно
+# засинає на TIDY_DELAY і прокидається якраз посеред наступних перевірок. Воно
+# бере замок дій — і state(remote=True) застає «зайнято» й чесно віддає
+# ПОПЕРЕДНІЙ стан замість свіжого, після чого перевірки дивляться на вчорашню
+# картину. Вимикаємо обидві сталі, як у test_local_only і test_rollback:
+# TIDY_EVERY прибирає прибирання за розкладом, TIDY_DELAY — засідку після дії.
+app.Api.TIDY_DELAY = 0
+app.Api.TIDY_EVERY = float("inf")
 app.CONF_DIR = os.path.join(base, "appdata")
 app.CONF = os.path.join(app.CONF_DIR, "config.json")
 app.LOG = os.path.join(app.CONF_DIR, "error.log")

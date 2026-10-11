@@ -302,6 +302,14 @@ api.do_commit(["scene.txt"], "r2")
 put(W("scene.txt"), b"three\n")
 api.do_commit(["scene.txt"], "r3")
 roll_back(repo, 1)
+# Після кожної здачі у фоні прибираються старі копії файлів, і це прибирання
+# тримає замок дій. state() у ту мить застає «зайнято» й віддає ПОПЕРЕДНІЙ
+# стан — без смуги відкоту, бо до відкоту її ще не було. Це гонка: на маку
+# (2026-10-11) вона програвалась стабільно — (rolled_back, warn) = (None, None).
+# Та сама ідіома очікування — нижче, після лікування.
+end = time.time() + 30
+while api._tidying and time.time() < end:
+    time.sleep(0.05)
 s = api.state(remote=True)
 check("смуга замість сирої помилки", s.get("rolled_back") is True and not s.get("warn"),
       (s.get("rolled_back"), s.get("warn")))

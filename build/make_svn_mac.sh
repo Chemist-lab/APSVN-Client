@@ -1,5 +1,5 @@
 #!/bin/bash
-# Зібрати ПЕРЕНОСНИЙ svn для APSVN.app:  ./make_svn_mac.sh
+# Зібрати ПЕРЕНОСНИЙ svn для APSVN.app:  ./build/make_svn_mac.sh
 #
 # Результат — тека svn-mac/, яку package_mac.sh кладе в .app як Resources/svn.
 # Двійник теки svn/ на Windows (там це SlikSvn), і так само не в git.
@@ -14,7 +14,12 @@
 # замикання залежностей і переписати абсолютні шляхи на відносні.
 set -euo pipefail
 
-SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Корінь проєкту — тека НАД build/. Скрипт переїхав сюди з кореня, а рахувати
+# від власної теки лишився: писав у build/svn-mac (якої package_mac.sh не бачить і
+# якої немає в .gitignore), а vendor для перевірки ABI шукав у build/vendor —
+# не знаходив і мовчки її пропускав. Збірка при цьому вдавалась лише там, де
+# в корені ще лежала стара svn-mac/; на свіжому клоні .app тихо їхав би без неї.
+SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$SRC_DIR/svn-mac"
 
 SVNBIN="${SVNBIN:-$(command -v svn || true)}"

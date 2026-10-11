@@ -1,5 +1,5 @@
 #!/bin/bash
-# Зібрати ПЕРЕНОСНИЙ Python для APSVN.app:  ./make_runtime_mac.sh
+# Зібрати ПЕРЕНОСНИЙ Python для APSVN.app:  ./build/make_runtime_mac.sh
 #
 # Результат — тека runtime-mac/, яку package_mac.sh кладе в .app. Це macOS-двійник
 # теки runtime/ на Windows (там це Python embeddable з python.org), і так само як
@@ -21,7 +21,12 @@
 # Те, що треба, робиться cp, install_name_tool і codesign.
 set -euo pipefail
 
-SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Корінь проєкту — тека НАД build/. Скрипт переїхав сюди з кореня, а рахувати
+# від власної теки лишився: писав у build/runtime-mac (якої package_mac.sh не бачить і
+# якої немає в .gitignore), а vendor для перевірки ABI шукав у build/vendor —
+# не знаходив і мовчки її пропускав. Збірка при цьому вдавалась лише там, де
+# в корені ще лежала стара runtime-mac/; на свіжому клоні .app тихо їхав би без неї.
+SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$SRC_DIR/runtime-mac"
 
 # Джерело можна підмінити: PYFW=/шлях/до/Python.framework/Versions/3.14

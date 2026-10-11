@@ -485,8 +485,8 @@ part of the root, with the code in `Resources/app`.
 | `app/server_api.py` | the studio server's `/api/v1`: tasks, pictures, what a scene uses |
 | `ui/`           | the interface (HTML/CSS/JS) |
 | `runtime/`      | Python 3.14 embeddable — so nothing has to be installed |
-| `runtime-mac/`  | the same idea on macOS: a portable python.org framework, built by `make_runtime_mac.sh` |
-| `svn-mac/`      | a portable Subversion for macOS, built by `make_svn_mac.sh` |
+| `runtime-mac/`  | the same idea on macOS: a portable python.org framework, built by `build/make_runtime_mac.sh` |
+| `svn-mac/`      | a portable Subversion for macOS, built by `build/make_svn_mac.sh` |
 | `vendor/`       | pywebview, keyring and their dependencies |
 | `svn/`          | SlikSvn 1.14.5 (Subversion CLI, Apache-2.0), the VC++ runtime it needs, its licences |
 | `explorer.py`   | the Explorer: one folder at a time |
@@ -1326,9 +1326,9 @@ fooled by it — but on Apple Silicon an unsigned binary does not warn, it
 simply refuses to start, so the build would be dead without it.
 
 ```bash
-./make_runtime_mac.sh   # once — builds the portable Python into runtime-mac/
-./make_svn_mac.sh       # once — builds the portable svn into svn-mac/
-./package_mac.sh
+./build/make_runtime_mac.sh   # once — builds the portable Python into runtime-mac/
+./build/make_svn_mac.sh       # once — builds the portable svn into svn-mac/
+./build/package_mac.sh
 ```
 
 It has been run — built on macOS 27 (Apple Silicon) against Python 3.14 and svn

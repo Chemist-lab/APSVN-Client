@@ -145,6 +145,25 @@ def _win_installed():
     return found
 
 
+def _mac_exe(app):
+    """Виконуваний файл усередині .app або None, якщо це не bundle.
+
+    Імʼя беремо з Info.plist, а не вгадуємо: у Blender воно «Blender», але
+    зашивати чуже імʼя означає зламатись від першого ж перейменування.
+    """
+    import plistlib
+
+    try:
+        with open(os.path.join(app, "Contents", "Info.plist"), "rb") as fh:
+            name = plistlib.load(fh).get("CFBundleExecutable")
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        return None
+    if not name:
+        return None
+    exe = os.path.join(app, "Contents", "MacOS", name)
+    return exe if os.path.isfile(exe) else None
+
+
 def _mac_installed():
     import plistlib
 
@@ -234,16 +253,29 @@ def launch(exe, path):
 
     На Windows — blender-launcher.exe, якщо він поруч (так робить і сама
     система): голий blender.exe — консольна програма й відкрив би ще чорне
-    вікно. На маку — open -a з конкретним .app.
+    вікно.
+
+    На маку — бінарник УСЕРЕДИНІ .app, а не `open -a`. Так було спершу, і це
+    втрачало робочу теку: open лише переказує файл застосунку через
+    LaunchServices, а той стартує з cwd "/" — перевірено дослідом, підставна
+    програма записала саме "/" попри cwd, заданий процесу open. Усе, що
+    Blender рахує від робочої теки, дивилося б тоді не туди. Бінарник із
+    bundle лишає Blender'ові його ж особу в Dock (іконку й назву), але вже з
+    нашою текою й файлом у argv — тобто рівно те саме, що на Windows.
     """
-    if desktop.MAC:
-        subprocess.Popen(["open", "-a", exe, path])
-        return True
     run = exe
     if desktop.WINDOWS:
         side = os.path.join(os.path.dirname(exe), "blender-launcher.exe")
         if os.path.isfile(side):
             run = side
+    elif desktop.MAC:
+        inner = _mac_exe(exe)
+        if inner is None:
+            # Не схоже на bundle. Хай відкриває система: без робочої теки,
+            # зате відкриє — це краще, ніж не відкрити нічого.
+            subprocess.Popen(["open", "-a", exe, path])
+            return True
+        run = inner
     kw = {}
     if desktop.WINDOWS:
         kw["creationflags"] = (getattr(subprocess, "DETACHED_PROCESS", 0x8) |

@@ -37,6 +37,23 @@ def fake_exe(*parts):
     return full
 
 
+def fake_app(name, exe_name="Blender"):
+    """Підставний .app: на маку Blender — це bundle, а не файл.
+
+    Звичайний файл тут перевіряв би не ту гілку: launch() бачить, що це не
+    bundle, і чесно відступає до `open -a`, у якого робочої теки немає."""
+    import plistlib
+    app = os.path.join(base, name + ".app")
+    os.makedirs(os.path.join(app, "Contents", "MacOS"), exist_ok=True)
+    with open(os.path.join(app, "Contents", "Info.plist"), "wb") as fh:
+        plistlib.dump({"CFBundleExecutable": exe_name,
+                       "CFBundleShortVersionString": "4.2.0"}, fh)
+    exe = os.path.join(app, "Contents", "MacOS", exe_name)
+    with open(exe, "wb") as fh:
+        fh.write(b"\xcf\xfa\xed\xfe")
+    return app, exe
+
+
 print("=" * 64)
 print("1. Версії: як їх пише студія, інсталятор і сам Blender")
 print("=" * 64)
@@ -94,8 +111,21 @@ real_popen = subprocess.Popen
 subprocess.Popen = FakePopen
 try:
     scene = fake_exe("проєкт", "сцена.blend")
-    blender.launch(b42, scene)
-    args, kw = calls[-1]
+    if desktop.MAC:
+        app42, inner = fake_app("Blender 4.2")
+        blender.launch(app42, scene)
+        args, kw = calls[-1]
+        # `open -a` губив робочу теку: LaunchServices стартує застосунок із
+        # cwd "/" (перевірено дослідом). Тому — бінарник усередині bundle.
+        check("бінарник усередині .app, а не open -a", args == [inner, scene], args)
+        check("процес окремий — переживе закриття APSVN",
+              kw.get("start_new_session") is True, kw)
+        blender.launch(fake_exe("не-bundle", "Blender"), scene)
+        check("не bundle — відступ до open -a (відкриє, хоч і без теки)",
+              calls[-1][0][:2] == ["open", "-a"], calls[-1][0])
+    else:
+        blender.launch(b42, scene)
+        args, kw = calls[-1]
     if desktop.WINDOWS:
         check("без launcher поруч — сам blender.exe", args == [b42, scene], args)
         launcher = fake_exe("Blender 4.2", "blender-launcher.exe")

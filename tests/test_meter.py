@@ -544,8 +544,10 @@ print()
 print("=" * 64)
 print("7. Наскрізно: справжній svn, записане доходить до смуги")
 print("=" * 64)
-if not sc.desktop.WINDOWS:
-    print("  (лічильники процесу є лише у Windows — пропущено)")
+# Лічильники процесу є у Windows (GetProcessIoCounters) і в macOS
+# (proc_pid_rusage, лише записане) — на обох перевіряємо наскрізно.
+if not (sc.desktop.WINDOWS or sc.desktop.MAC):
+    print("  (лічильників процесу на цій системі немає — пропущено)")
 else:
     # такий, щоб здача тривала кілька замірів (вони — раз на 0.5 с)
     BIG = 192 * MB

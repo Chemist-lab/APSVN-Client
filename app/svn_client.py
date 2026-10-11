@@ -530,8 +530,76 @@ class _IO_COUNTERS(ctypes.Structure):
                 ("OtherTransferCount", ctypes.c_ulonglong)]
 
 
-def _io_counts(handle):
-    """Скільки байтів процес svn.exe уже прочитав і записав: (read, written).
+class _RUSAGE_V2(ctypes.Structure):
+    """Те саме, що _IO_COUNTERS, але для macOS: proc_pid_rusage(RUSAGE_INFO_V2).
+
+    Поля виписані ВСІ, а не через зміщення, і це не педантизм: попередня
+    спроба (2026-09) якраз і рахувала зміщення на око, промахнулась на одне
+    поле — читала ri_child_elapsed_abstime замість ri_diskio_bytesread —
+    завжди діставала нуль і зробила з цього висновок, що на маку лічильників
+    немає взагалі. Вони є; через ту помилку смуга здачі тут півтора місяця
+    стояла без причини.
+    """
+    _fields_ = [("ri_uuid", ctypes.c_uint8 * 16)] + [
+        (n, ctypes.c_uint64) for n in (
+            "ri_user_time", "ri_system_time", "ri_pkg_idle_wkups",
+            "ri_interrupt_wkups", "ri_pageins", "ri_wired_size",
+            "ri_resident_size", "ri_phys_footprint",
+            "ri_proc_start_abstime", "ri_proc_exit_abstime",
+            "ri_child_user_time", "ri_child_system_time",
+            "ri_child_pkg_idle_wkups", "ri_child_interrupt_wkups",
+            "ri_child_pageins", "ri_child_elapsed_abstime",
+            "ri_diskio_bytesread", "ri_diskio_byteswritten")]
+
+
+_libc = None
+
+
+def _mac_io(pid):
+    """(None, записано) для процесу pid або None, якщо не вийшло.
+
+    ЧОМУ ПРОЧИТАНЕ — None, А НЕ НУЛЬ. На маку читання чужого процесу не
+    рахується: дослід 2026-10-11 — дитина читає 400 МБ повз кеш сторінок
+    (F_NOCACHE), а ri_diskio_bytesread не зрушив з нуля за 13 замірів. Нуль
+    тут гірший за порожнечу: він пішов би в розрахунок швидкості й показав
+    художникові ВИМІРЯНІ «0 Б/с». Порожнеча чесно лишає поле порожнім.
+
+    ЗАПИСАНЕ ж точне й росте в реальному часі: файл 600 МБ дав рівно
+    600.0 МБ, крок у крок із fsync. Саме на ньому стоїть смуга здачі.
+    """
+    global _libc
+    if _libc is None:
+        try:
+            # CDLL(None), а не find_library("c"): символи libSystem у процесі
+            # вже є, шукати нічого. Це ще й прибирає потребу в import
+            # ctypes.util усередині функції — а він тут був міною. Оператор
+            # import звʼязує імʼя ctypes ЛОКАЛЬНО на весь обсяг функції, тож
+            # перший виклик проходив (гілка виконалась і звʼязала), а кожен
+            # наступний падав на ctypes.byref з UnboundLocalError, який тихо
+            # ковтав except нижче. Виглядало як «лічильник працює один раз».
+            _libc = ctypes.CDLL(None, use_errno=True)
+            _libc.proc_pid_rusage.argtypes = [ctypes.c_int, ctypes.c_int,
+                                              ctypes.c_void_p]
+            _libc.proc_pid_rusage.restype = ctypes.c_int
+        except Exception:
+            _libc = False          # більше не пробуємо
+    if _libc is False:
+        return None
+    try:
+        buf = _RUSAGE_V2()
+        if _libc.proc_pid_rusage(int(pid), 2, ctypes.byref(buf)) != 0:
+            return None            # процес уже помер — нормально
+        return None, buf.ri_diskio_byteswritten
+    except Exception:
+        return None
+
+
+def _io_counts(p):
+    """Скільки байтів процес svn уже прочитав і записав: (read, written).
+
+    Приймає сам Popen, а не p._handle, і це теж не дрібниця: на POSIX
+    атрибута _handle немає, тож виклик кидав AttributeError. У потоці замірів
+    він стояв ПОЗА try — і потік помирав на першому ж заході, мовчки.
 
     Прочитане — НЕ відсоток переданого: svn читає файли від 1 до 4 разів
     (робочий файл, його попередню версію з .svn, обидва ще раз, коли розмір
@@ -555,17 +623,17 @@ def _io_counts(handle):
     мережею пішло 2.2 ГБ). Виняток — file://: там svn.exe сам пише ще й
     у сховище, тож для нього записане не рахуємо.
     """
-    if not desktop.WINDOWS:
-        # На маку прямого аналога немає (psutil там io_counters не вміє), тож
-        # виміряної швидкості просто не буде — лишиться оцінка за історією.
+    if desktop.WINDOWS:
+        try:
+            c = _IO_COUNTERS()
+            if ctypes.windll.kernel32.GetProcessIoCounters(int(p._handle),
+                                                           ctypes.byref(c)):
+                return c.ReadTransferCount, c.WriteTransferCount
+        except Exception:
+            pass
         return None
-    try:
-        c = _IO_COUNTERS()
-        if ctypes.windll.kernel32.GetProcessIoCounters(int(handle),
-                                                       ctypes.byref(c)):
-            return c.ReadTransferCount, c.WriteTransferCount
-    except Exception:
-        pass
+    if desktop.MAC:
+        return _mac_io(p.pid)
     return None
 
 
@@ -607,7 +675,7 @@ def _stream_lines(cmd, cwd, stdin_data, on_line, on_io=None):
 
         def sample():
             while p.poll() is None and not ended.is_set():
-                n = _io_counts(p._handle)
+                n = _io_counts(p)
                 try:
                     on_io(n)          # None — лічильників ОС немає (мак)
                 except Exception:
@@ -668,7 +736,7 @@ def _stream_lines(cmd, cwd, stdin_data, on_line, on_io=None):
         ended.set()
         sampler.join(timeout=2)
         try:
-            on_io(_io_counts(p._handle))
+            on_io(_io_counts(p))
         except Exception:
             pass
     t.join(timeout=5)
@@ -1671,7 +1739,11 @@ class _Notifier:
                  rate_hint=None, meter=None, track_writes=False):
         self.cb, self.wc = cb, wc
         self.meter = meter
-        self.track = bool(track_writes and kind == "upload" and desktop.WINDOWS)
+        # Записане віддають і Windows (GetProcessIoCounters), і macOS
+        # (proc_pid_rusage) — перевірено на обох. Там, де лічильників немає,
+        # лишається «network»: верхня межа по трубі.
+        self.track = bool(track_writes and kind == "upload"
+                          and (desktop.WINDOWS or desktop.MAC))
         basis = "files" if self.track else "network" if meter is not None else None
         self.st = {"kind": kind, "phase": "start", "done": 0, "total": total,
                    "file": None, "bytes": None, "total_bytes": total_bytes,

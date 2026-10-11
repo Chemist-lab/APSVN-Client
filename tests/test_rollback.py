@@ -338,6 +338,53 @@ check("вміст — твій (three), і він — зміна",
 check("повторне лікування — чесне «нема чого»",
       "nothing to repair" in api.do_repair_rollback())
 
+print()
+print("=" * 64)
+print("7. «й» в імені: план і повернення порівнюють рядки, а диску байдуже")
+print("=" * 64)
+# APFS нечутлива до нормалізації Unicode, а порівняння рядків у плані й у
+# _put_back — чутливі. «й» буває складеним (NFC, U+0439 — так ім'я приходить з
+# Windows) і розкладеним (NFD, и + U+0306 — таке може дати macOS). Якби план
+# узяв одну форму, а диск віддав іншу, файл художника «не знайшовся» б посеред
+# лікування. Перевірено 2026-10-11: обидві форми доходять цілими. NFD — лише на
+# маку: на Windows такого імені у справжньому проєкті не буває.
+import unicodedata  # noqa: E402
+NAMES = [unicodedata.normalize("NFC", "Assets/Мій шот.blend")]
+if sys.platform == "darwin":
+    NAMES.append("Assets/" + unicodedata.normalize("NFD", "Їжак й.blend"))
+repo = os.path.join(base, "nf-repo")
+wc = os.path.join(base, "nf")
+subprocess.run([sc.SVNADMIN, "create", repo], check=True, capture_output=True)
+sc.checkout(url_of(repo), wc)
+W = lambda r: os.path.join(wc, r.replace("/", os.sep))
+for r in NAMES:
+    put(W(r), b"v1\n" * 1000)
+sc.add(wc, ["Assets"])
+sc.commit(wc, ["Assets"], "r1")
+for r in NAMES:
+    put(W(r), b"v2\n" * 2000)
+sc.commit(wc, NAMES, "r2")
+for r in NAMES:
+    put(W(r), b"v3 - work after the last submit\n" * 3000)
+before = {r: digest(W(r)) for r in NAMES}
+roll_back(repo, 1)
+plan = sc.rollback_plan(wc)
+check("план бачить кожне ім'я з «й» (%d)" % len(NAMES),
+      sorted(plan.get("nodes") or []) == sorted(NAMES), plan.get("nodes"))
+sc.repair_rollback(wc)
+check("робота з «й» в імені вціліла байт у байт",
+      all(os.path.exists(W(r)) and digest(W(r)) == before[r] for r in NAMES),
+      [(r, os.path.exists(W(r))) for r in NAMES])
+st = stat_of(wc)
+check("після лікування — це зміни, а не «невідомий файл»",
+      all(st.get(r) == "modified" for r in NAMES), st)
+try:
+    sc.update(wc)
+    check("оновлення після лікування працює", True)
+except sc.SvnError as e:
+    check("оновлення після лікування працює", False, e)
+check("рятувальних тек не лишилось", not rescue_left(wc), rescue_left(wc))
+
 shutil.rmtree(base, ignore_errors=True)
 print()
 print("=" * 64)

@@ -38,8 +38,14 @@ $zip = Join-Path (Split-Path $src -Parent) "$name-$ver.zip"
 # і то в кращому разі: перевірка нижче її зупиняє, а не пропускає далі.
 $py = (Get-Command python -ErrorAction SilentlyContinue).Source
 if (-not $py) { $py = Join-Path $src "runtime\python.exe" }
+# Обидва скрипти наприкінці друкують підсумок кирилицею. У консолі з
+# cp1252 print падав, і падіння тонуло в Out-Null — збірка йшла далі, тобто
+# так само мовчки пройшла б і справжня поломка. Тому UTF-8 і перевірка коду.
+$env:PYTHONIOENCODING = "utf-8"
 & $py (Join-Path $PSScriptRoot "make_icon.py") | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "make_icon.py впав ($LASTEXITCODE)" }
 & $py (Join-Path $PSScriptRoot "make_launcher.py") | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "make_launcher.py впав ($LASTEXITCODE)" }
 if (-not (Test-Path (Join-Path $src "APSVN.exe"))) { throw "APSVN.exe не зібрався" }
 
 New-Item -ItemType Directory -Force -Path $dest | Out-Null

@@ -144,6 +144,12 @@ be “simplified”»).
 
 ## 3. Варто обговорити з користувачем (міняє і Windows)
 
+**Вирішено 2026-10-12 — «ховати й давати прибрати».** `JUNK_RE` і
+`global-ignores` (крім `Icon`: CR у конфіг не запишеш, його ховає
+`JUNK_RE`), плюс `__MACOSX`; службові теки в 🗂 — одним рядком серед
+тимчасового, у Кошик цілком. Тести — `test_local_only.py`, розділ 3
+(`Icon` — лише на Mac: Windows такого імені не створює).
+
 **Мотлох з Mac** у 🗂 Files not on the server і в Changes:
 * `._*` — AppleDouble на SMB і exFAT, Mac плодить їх і на спільних шарах;
 * `Icon\r`, `.Spotlight-V100`, `.Trashes`, `.fseventsd`.

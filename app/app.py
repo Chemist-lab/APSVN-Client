@@ -2453,11 +2453,12 @@ class Api:
             left = set(desktop.to_recycle_bin(list(full)))
             gone = [r for f, r in full.items() if f not in left]
             size = sum(r["bytes"] for r in gone)
+            n = sum(r["files"] or 1 for r in gone)      # службова тека — багато файлів
             activity("recycle %s %s: %d file(s), %s%s" % (
-                (self._proj() or {}).get("name") or "?", group, len(gone),
+                (self._proj() or {}).get("name") or "?", group, n,
                 human_size(size), "; stayed: %d" % len(left) if left else ""))
             out = ("Moved %d file%s (%s) to the %s." % (
-                len(gone), "" if len(gone) == 1 else "s", human_size(size),
+                n, "" if n == 1 else "s", human_size(size),
                 desktop.TRASH)
                 if gone else "Nothing was moved.")
             if left:

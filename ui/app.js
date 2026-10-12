@@ -2755,8 +2755,9 @@ const LOCAL_GROUP = {
             "Blender keeps the previous save next to the scene — older copies, " +
             "each the full size of the scene."],
   temp: ["Temporary and system files",
-         "Leftovers from saving and from svn, Windows thumbnails. Leftovers of an " +
-         "open conflict and desktop.ini stay — they are still needed."],
+         "Leftovers from saving and from svn, Windows thumbnails, Mac service " +
+         "files (._*, __MACOSX). Leftovers of an open conflict and desktop.ini " +
+         "stay — they are still needed."],
   ignored: ["Ignored by the project's svn rules",
             "The project's rules keep these out of every submit."],
   nested: ["Other projects inside this folder",

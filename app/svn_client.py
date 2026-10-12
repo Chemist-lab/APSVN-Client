@@ -82,9 +82,16 @@ if not desktop.WINDOWS and os.path.isfile(_CERT):
     os.environ.setdefault("SSL_CERT_FILE", _CERT)
 
 # файли, які ніколи не потрапляють ані в список, ані в коміт
+# Службове macOS (рішення користувача 2026-10-12): Mac лишає його поруч зі
+# справжніми файлами на спільних шарах і флешках — «._сцена.blend» на кожен
+# торкнутий файл, теки .Spotlight-V100/.Trashes/.fseventsd, «Icon\r» для
+# значка теки; __MACOSX приходить і без Mac — в архівах, зібраних на ньому.
+# Без цього все це висіло в Changes як «нове» й могло поїхати на сервер.
 JUNK_RE = re.compile(
     r"(\.blend\d+$|\.blend@$|\.mine$|\.r\d+$|\.prej$|\.tmp$|~$|"
-    r"^Thumbs\.db$|^\.DS_Store$|^desktop\.ini$)", re.I)
+    r"^Thumbs\.db$|^\.DS_Store$|^desktop\.ini$|"
+    r"^\._|^__MACOSX$|^Icon\r$|^\.Spotlight-V100$|^\.Trashes$|^\.fseventsd$)",
+    re.I)
 
 # розширення, які не можна зливати -> обовʼязковий лок
 # Не «бінарні» в сенсі байтів, а «редагує один за раз»: .ma — узагалі текст,
@@ -111,7 +118,7 @@ password-stores = windows-cryptoapi
 
 [miscellany]
 enable-auto-props = yes
-global-ignores = *.blend1 *.blend2 *.blend[0-9]* *.blend@ *.mine *.r[0-9]* *.prej *.tmp *~ Thumbs.db .DS_Store desktop.ini
+global-ignores = *.blend1 *.blend2 *.blend[0-9]* *.blend@ *.mine *.r[0-9]* *.prej *.tmp *~ Thumbs.db .DS_Store desktop.ini ._* __MACOSX .Spotlight-V100 .Trashes .fseventsd
 
 [auto-props]
 """ + "\n".join("*%s = svn:needs-lock=*" % e for e in BINARY_EXT) + "\n"
@@ -939,7 +946,7 @@ def _scan_new(wc, rel, cap, want_names):
         for e in sorted(entries, key=lambda x: x.name.lower()):
             try:
                 if e.is_dir(follow_symlinks=False):
-                    if e.name != ".svn":
+                    if e.name != ".svn" and not JUNK_RE.search(e.name):
                         stack.append(e.path)
                     continue
                 if JUNK_RE.search(e.name):
@@ -1013,11 +1020,37 @@ def local_only(wc, cap=300):
                             "bytes": st.st_size, "mtime": st.st_mtime,
                             "recyclable": ok})
 
+    def junk_dir(rel, full, st):
+        """Службова тека (__MACOSX, .Spotlight-V100…) — одним рядком серед
+        тимчасового, у Кошик цілком."""
+        n, total, stack = 0, 0, [full]
+        while stack and walked[0] < WALK_CAP:
+            try:
+                entries = list(os.scandir(stack.pop()))
+            except OSError:
+                continue
+            for x in entries:
+                try:
+                    if x.is_dir(follow_symlinks=False):
+                        stack.append(x.path)
+                        continue
+                    total += x.stat(follow_symlinks=False).st_size
+                except OSError:
+                    continue
+                n += 1
+                walked[0] += 1
+        rows["temp"].append({"path": rel.rstrip("/") + "/", "kind": "dir",
+                             "files": n, "bytes": total, "mtime": st.st_mtime,
+                             "recyclable": True})
+
     for rel, ignored in found:
         full = os.path.join(wc, rel.replace("/", os.sep))
         try:
             st = os.stat(full)
         except OSError:
+            continue
+        if os.path.isdir(full) and JUNK_RE.search(rel.rsplit("/", 1)[-1]):
+            junk_dir(rel, full, st)
             continue
         if not os.path.isdir(full):
             name = rel.rsplit("/", 1)[-1]
@@ -1042,7 +1075,10 @@ def local_only(wc, cap=300):
             for x in entries:
                 try:
                     if x.is_dir(follow_symlinks=False):
-                        if x.name != ".svn":
+                        if JUNK_RE.search(x.name):
+                            junk_dir(os.path.relpath(x.path, wc).replace("\\", "/"),
+                                     x.path, x.stat(follow_symlinks=False))
+                        elif x.name != ".svn":
                             stack.append(x.path)
                         continue
                     xs = x.stat(follow_symlinks=False)
@@ -1069,7 +1105,7 @@ def local_only(wc, cap=300):
             "more": 0 if cap is None else max(0, len(lst) - cap),
             "files": sum(r["files"] or 0 for r in lst),
             "bytes": sum(r["bytes"] or 0 for r in lst),
-            "recyclable": len(rec),
+            "recyclable": sum(r["files"] or 1 for r in rec),
             "recyclable_bytes": sum(r["bytes"] for r in rec)})
     return {"groups": groups, "cut": walked[0] >= WALK_CAP,
             "files": sum(g["files"] for g in groups),

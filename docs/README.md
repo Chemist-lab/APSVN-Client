@@ -54,7 +54,15 @@ Nothing to install — Python and svn live inside the folder.
   files are not affected.
 
 Blender's temporary copies (`.blend1`, `.blend2` and friends) never show up in
-the list and never reach the server.
+the list and never reach the server. The same goes for the service files a Mac
+leaves next to real ones on shared drives:
+* `._*` files;
+* the `__MACOSX` folder, which Mac-made zips bring even to Windows;
+* `.Spotlight-V100`, `.Trashes`, `.fseventsd`;
+* `Icon`.
+
+*Files not on the server* lists them with the temporary files, and they can
+go to the Recycle Bin from there.
 
 ### How the **Changes** tab is split
 
@@ -495,7 +503,7 @@ part of the root, with the code in `Resources/app`.
 | `blender.py`    | which Blender opens a scene: the studio's version, found on this machine |
 | `blendthumb.py` | preview embedded in a `.blend` |
 | `imgthumb.py`   | previews for png/jpg/tga/exr |
-| `tests/`        | 983 checks without a server, up to 26 more (read-only) against the real one |
+| `tests/`        | 991 checks without a server, up to 26 more (read-only) against the real one |
 
 Settings live in `%APPDATA%\APSVN\config.json`, format 2:
 `{"format":2, "projects":[…], "current":"<id>", …mirror of the current one…}`.

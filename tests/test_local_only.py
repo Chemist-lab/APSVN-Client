@@ -214,6 +214,62 @@ with open(app.ACTIVITY, encoding="utf-8") as fh:
 check("у журналі — що й скільки прибрано",
       "recycle Проєкт backups: 3 file(s), 9.3 KB" in log, log.strip().splitlines()[-3:])
 
+print()
+print("=" * 64)
+print("3. Службове macOS — мотлох, як .blend1 (рішення 2026-10-12)")
+print("=" * 64)
+# Mac лишає це поруч зі справжніми файлами на шарах і флешках; __MACOSX —
+# ще й у кожному архіві, зібраному на Mac
+put("Assets/._сцена.blend", 4096)
+put("__MACOSX/Assets/._wood.png", 4096)
+put("__MACOSX/Assets/._rock.png", 4096)
+put("Renders/test/__MACOSX/._frame_0000.png", 4096)
+put(".Spotlight-V100/Store-V2/index", 500)
+# «Icon\r» Windows створити не дає (CR в імені заборонено) — лише на маку
+ICON = not desktop.WINDOWS
+if ICON:
+    put("Assets/Icon\r", 0)
+put("Icons/ui_play.png", 300)                   # справжня тека — НЕ мотлох
+changes = {f["path"] for f in sc.status(WC)}
+check("Changes службового Mac не показує",
+      not any("._" in p or "__MACOSX" in p or "Spotlight" in p or p.endswith("Icon\r")
+              for p in changes), sorted(changes))
+check("…а справжню теку «Icons» — показує", "Icons" in changes, sorted(changes))
+d = api.local_only()
+G = {g["id"]: g for g in d["groups"]}
+tmp = {r["path"]: r for r in G["temp"]["rows"]}
+check("у 🗂 — серед тимчасового: ._ файл, службові теки одним рядком",
+      "Assets/._сцена.blend" in tmp and ("Assets/Icon\r" in tmp or not ICON) and
+      tmp.get("__MACOSX/", {}).get("files") == 2 and
+      tmp.get(".Spotlight-V100/", {}).get("files") == 1 and
+      tmp.get("Renders/test/__MACOSX/", {}).get("files") == 1, sorted(tmp))
+check("…і все це можна в Кошик",
+      all(tmp[k]["recyclable"] for k in ("Assets/._сцена.blend", "__MACOSX/",
+                                          ".Spotlight-V100/", "Renders/test/__MACOSX/")))
+new = {r["path"]: r for r in G["new"]["rows"]}
+check("нова тека з кадрами — без __MACOSX усередині",
+      new.get("Renders/", {}).get("files") == 3, new.get("Renders/"))
+check("справжня «Icons» — серед нового", "Icons/" in new, sorted(new))
+put("Pack/tex.png", 100)
+put("Pack/._tex.png", 4096)
+put("Pack/__MACOSX/._tex.png", 4096)
+sc.add(WC, ["Pack"])
+added = {f["path"]: f["status"] for f in sc.status(WC)}
+check("здача нової теки службового Mac не бере (global-ignores)",
+      added.get("Pack/tex.png") == "added" and "Pack/._tex.png" not in added and
+      not any("__MACOSX" in p for p in added), {k: v for k, v in added.items()
+                                                  if k.startswith("Pack")})
+binned.clear()
+desktop.to_recycle_bin = fake_bin
+try:
+    out = api.recycle_junk("temp")
+finally:
+    desktop.to_recycle_bin = real_bin
+check("Кошик рахує файли, а не рядки (службова тека — багато файлів)",
+      out.startswith("Moved %d files" % (8 if ICON else 7)) and
+      not os.path.exists(os.path.join(WC, "__MACOSX")) and
+      os.path.exists(os.path.join(WC, "Icons", "ui_play.png")), out)
+
 shutil.rmtree(base, ignore_errors=True)
 print()
 print("=" * 64)
